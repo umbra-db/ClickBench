@@ -6,9 +6,14 @@ LANG="" ls -1 */results/*.json | while read -r file
 do
     [[ $file =~ ^(hardware|versions|gravitons)/ ]] && continue;
 
-    [ "${FIRST}" = "0" ] && echo -n ','
-    jq --compact-output ". += {\"source\": \"${file}\"}" "${file}" || echo "Error in $file" >&2
-    FIRST=0
+
+    if out=$(jq --compact-output ". += {\"source\": \"${file}\"}" "${file}"); then
+        [ "${FIRST}" = "0" ] && echo -n ','
+        echo "${out}"
+        FIRST=0
+    else
+        echo "Error in $file" >&2
+    fi
 done >> data.generated.js.new
 echo '];' >> data.generated.js.new
 
