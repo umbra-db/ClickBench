@@ -1,10 +1,31 @@
 #!/bin/bash
 set -eu
 
+source ./local-env.sh
+
+if [ "$UMBRA_LOCAL" -eq 1 ]; then
+    # Local binaries live under ./bin (provided out-of-band, gitignored), so
+    # there's no image to pull. We do need psql + the decompressor, and a
+    # freshly-created empty database file for the server to open. createdb is
+    # an offline init step: it must run once, before start launches the
+    # server, and must NOT re-run on the per-query restarts (that would wipe
+    # the loaded table) — hence it lives here in install, not in start.
+    sudo apt-get update -y
+    sudo apt-get install -y postgresql-client gzip pigz
+    mkdir -p data
+    chmod -R 777 data
+    rm -rf db
+    mkdir db
+    chmod -R 777 db
+    "$SQL" -createdb db/umbra.db <<<"ALTER ROLE postgres WITH LOGIN SUPERUSER PASSWORD 'postgres';"
+    [ "$UMBRA_TRACE" -eq 1 ] && mkdir -p "$TRACE_DIR"
+    exit 0
+fi
+
 sudo apt-get update -y
 sudo apt-get install -y docker.io postgresql-client gzip
 
-sudo docker pull umbradb/umbra:latest
+sudo docker pull "umbradb/umbra:${VERSION}"
 
 rm -rf db
 mkdir -p data db

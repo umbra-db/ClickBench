@@ -1,16 +1,42 @@
 #!/bin/bash
 set -eu
 
+source ./local-env.sh
+
 mkdir -p data
-mv hits.tsv data/
+
+# Download hits.tsv once and keep it. The ~70 GB decompressed dataset is
+# expensive to fetch, so reuse data/hits.tsv across runs: only download when
+# it's absent (the driver's own download step is disabled for umbra — see
+# BENCH_DOWNLOAD_SCRIPT in benchmark.sh), and don't delete it afterwards.
+if [ ! -f data/hits.tsv ]; then
+    ../lib/download-hits-tsv data
+fi
 chmod -R 777 data
 
 # create.sql for umbra both creates the table and ingests via COPY. Use
 # ON_ERROR_STOP=1 so a mid-COPY failure (e.g. the box runs out of memory
 # and Umbra survives but the COPY transaction errored) bubbles up
 # instead of leaving a half-loaded table.
+#
+# create_local.sql is identical except the COPY reads from a host-relative
+# 'data/hits.tsv' (the local server's CWD is the umbra dir) rather than the
+# Docker container's '/data/hits.tsv' bind mount.
+CREATE_FILE=create.sql
+[ "$UMBRA_LOCAL" -eq 1 ] && CREATE_FILE=create_local.sql
 PGPASSWORD=postgres psql -p 5432 -h 127.0.0.1 -U postgres \
-    -v ON_ERROR_STOP=1 -f create.sql
+    -v ON_ERROR_STOP=1 -f "$CREATE_FILE"
+
+if [ "$UMBRA_TRACE" -eq 1 ]; then
+    mkdir -p "$TRACE_DIR"
+    # Zero the stop counter that ./stop bumps to tell the phases apart.
+    # ./load runs exactly once, before the query loop, so this is the clean
+    # point to reset it — a value left over from a previous run would
+    # misclassify every phase. The load's own trace isn't dumped here; the
+    # cold-cycle ./stop before query 1 (the first stop) flushes it to
+    # load.trace, keeping every dump on the same shutdown boundary.
+    echo 0 > "$TRACE_DIR/.stops"
+fi
 
 # Belt-and-braces row-count check. Umbra has been observed to leave a
 # partial table on memory-constrained hosts (16 GB c6a.4xlarge can't
@@ -25,5 +51,6 @@ if [ "$got" -lt $((expected - 100)) ]; then
     exit 1
 fi
 
-rm -f data/hits.tsv
+# Keep data/hits.tsv for reuse on subsequent runs (it's only downloaded
+# when missing, above), so don't delete it here.
 sync

@@ -1,0 +1,64 @@
+#!/bin/bash
+# Wrapper around ./benchmark.sh that captures the run output and writes a
+# standard ClickBench result JSON.
+#
+# benchmark.sh prints the per-query "[t1,t2,t3]," lines plus "Load time:",
+# "Data size:" and "Concurrent QPS:" lines to stdout; we tee that to a log and
+# hand it to parse-result.py, which assembles the JSON using template.json for
+# the static metadata fields.
+#
+# Output goes to results/20700101/<machine>.<version>[.local|.trace][.<tag>].json,
+# matching the existing umbra result files. The run-mode variant comes first
+# (TRACE=1 -> ".trace", LOCAL=1 -> ".local", plain Docker -> none; TRACE implies
+# LOCAL but is labelled "trace"), then the optional TAG, e.g.
+# epyc3.26.06.local.prefetch.json. The result "system" title is "Umbra <version>"
+# with the variant and tag in parentheses, e.g. "Umbra 26.06 (local, prefetch)".
+#
+# Overridable via the environment:
+#   BENCH_MACHINE       machine label for the result (default: $MACHINE, which
+#                       local-env.sh derives from the hostname)
+#   BENCH_DATE          result "date" field, YYYY-MM-DD (default: today, UTC)
+#   BENCH_CLUSTER_SIZE  cluster size (default: 1)
+#   BENCH_LOG           log file path (default: ./run-benchmark.log)
+#
+# All other knobs (LOCAL, TRACE, VERSION, ...) pass straight through to
+# benchmark.sh via the environment.
+set -euo pipefail
+
+cd "$(dirname "$0")"
+source ./local-env.sh
+
+BENCH_MACHINE="${BENCH_MACHINE:-$MACHINE}"
+BENCH_DATE="${BENCH_DATE:-$(date -u +%Y-%m-%d)}"
+BENCH_CLUSTER_SIZE="${BENCH_CLUSTER_SIZE:-1}"
+BENCH_LOG="${BENCH_LOG:-./run-benchmark.log}"
+
+# Run-mode variant for the filename/title. TRACE implies LOCAL (see
+# local-env.sh) but gets its own "trace" label, so check it first.
+BENCH_VARIANT=""
+if [ "$UMBRA_TRACE" -eq 1 ]; then
+    BENCH_VARIANT="trace"
+elif [ "$UMBRA_LOCAL" -eq 1 ]; then
+    BENCH_VARIANT="local"
+fi
+BENCH_VERSION="$VERSION"
+BENCH_TAG="$TAG"
+export BENCH_MACHINE BENCH_DATE BENCH_CLUSTER_SIZE BENCH_VERSION BENCH_VARIANT BENCH_TAG
+
+# Run the benchmark, mirroring output to the terminal and the log. set -o
+# pipefail makes a benchmark.sh failure propagate through the tee.
+./benchmark.sh 2>&1 | tee "$BENCH_LOG"
+
+# Always land under the fixed 20700101 dir alongside the existing umbra results.
+out_dir="results/20700101"
+mkdir -p "$out_dir"
+# Suffix is the run-mode variant (.local/.trace) followed by the TAG, so a
+# tagged local run lands at epyc3.26.06.local.prefetch.json.
+suffix=""
+[ -n "$BENCH_VARIANT" ] && suffix=".$BENCH_VARIANT"
+[ -n "$BENCH_TAG" ] && suffix="$suffix.$BENCH_TAG"
+out_file="$out_dir/$BENCH_MACHINE.$BENCH_VERSION$suffix.json"
+
+python3 ./parse-result.py "$BENCH_LOG" > "$out_file"
+
+echo "run-benchmark: wrote $out_file" >&2

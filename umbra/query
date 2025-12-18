@@ -6,6 +6,8 @@
 # Exit non-zero on error.
 set -e
 
+source ./local-env.sh 2>/dev/null || true
+
 query=$(cat)
 
 raw=$(PGPASSWORD=postgres psql -p 5432 -h 127.0.0.1 -U postgres -v ON_ERROR_STOP=1 -t -c '\timing' -c "$query" 2>&1) && exit_code=0 || exit_code=$?
@@ -26,6 +28,11 @@ if [ "$exit_code" -ne 0 ] || printf '%s\n' "$raw" | grep -qE '^(ERROR|FATAL|PANI
 fi
 
 printf '%s\n' "$raw" | grep -v '^Time:'
+
+# TRACE mode: the perftracer flush happens entirely in ./stop, at the
+# server-shutdown boundary. The driver restarts the server between every
+# query, so ./stop just counts how often it has been called to know which
+# phase's trace the server is holding — nothing to do here.
 
 ms=$(printf '%s\n' "$raw" | grep -oP 'Time:\s*\K[0-9.]+' | tail -n1)
 if [ -z "$ms" ]; then

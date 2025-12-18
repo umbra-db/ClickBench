@@ -1,3 +1,62 @@
 #!/bin/bash
 
+source ./local-env.sh 2>/dev/null || true
+
+# TRACE mode: flush the perftracer here, at the shutdown boundary. The
+# driver restarts the server before every query and once more before the
+# concurrent window, so each ./stop sees exactly one phase's worth of
+# in-memory trace. Counting how often ./stop has run (zeroed by ./load)
+# tells us which phase just finished, producing the chain
+#   load.trace -> q0.trace -> q1.trace -> ... -> q42.trace -> concurrent.trace
+# Stop 1 lands right after ./load, stop k+1 after query k's tries (so the
+# last sequential query is flushed by the concurrent cold-cycle stop at
+# nq+1), and any stop beyond that closes out the concurrent window.
+# Must run before the kill below, while the server is still up.
+if [ "${UMBRA_TRACE:-0}" -eq 1 ] && [ -n "${TRACE_DIR:-}" ]; then
+    nq=$(grep -cve '^[[:space:]]*$' "${BENCH_QUERIES_FILE:-queries.sql}" 2>/dev/null || echo 0)
+    mkdir -p "$TRACE_DIR"
+    s=$(cat "$TRACE_DIR/.stops" 2>/dev/null || echo 0)
+    s=$((s + 1))
+    echo "$s" > "$TRACE_DIR/.stops"
+    if [ "$s" -eq 1 ]; then
+        name=load
+    elif [ "$s" -le $((nq + 1)) ]; then
+        name="q$((s - 2))"
+    else
+        name=concurrent
+    fi
+    PGPASSWORD=postgres psql -p 5432 -h 127.0.0.1 -U postgres \
+        -c "SET debug.perftracer.dump = '${TRACE_DIR}/${name}.trace';" >/dev/null 2>&1 || true
+fi
+
+if [ "${UMBRA_LOCAL:-0}" -eq 1 ]; then
+    # Kill exactly the server ./start launched, then BLOCK until the
+    # process is actually gone before returning.
+    #
+    # This wait is load-bearing, not belt-and-braces. On SIGTERM Umbra
+    # flushes its mmap working set (100M rows for the hits table) and
+    # only releases the db flock when the process fully exits — which
+    # lags the moment it stops accepting connections by seconds. The
+    # driver's bench_wait_stopped polls ./check (a TCP `SELECT 1`), so it
+    # declares the server "stopped" as soon as the listener closes, while
+    # the process is still alive holding db/umbra.db.lock. The next
+    # ./start then launches a server that dies with
+    #   FATAL: unable to acquire flock on db/umbra.db.lock
+    # leaving nothing up; bench_check_loop spins to its 300s timeout and
+    # the whole run fails. Returning only once the PID is reaped (and thus
+    # the flock released) makes the subsequent ./start safe.
+    if [ -f "${SERVER_PID_FILE:-server.pid}" ]; then
+        pid=$(cat "${SERVER_PID_FILE:-server.pid}")
+        kill "$pid" 2>/dev/null || true
+        # Wait up to ~60s for the kernel to reap it (reparented to init,
+        # but same-user so kill -0 still reports liveness).
+        for _ in $(seq 1 600); do
+            kill -0 "$pid" 2>/dev/null || break
+            sleep 0.1
+        done
+        rm -f "${SERVER_PID_FILE:-server.pid}"
+    fi
+    exit 0
+fi
+
 sudo docker stop umbradb >/dev/null 2>&1 || true

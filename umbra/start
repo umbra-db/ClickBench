@@ -1,7 +1,20 @@
 #!/bin/bash
 set -eu
 
+source ./local-env.sh
+
 if PGPASSWORD=postgres psql -p 5432 -h 127.0.0.1 -U postgres -c 'SELECT 1' >/dev/null 2>&1; then
+    exit 0
+fi
+
+if [ "$UMBRA_LOCAL" -eq 1 ]; then
+    # Launch the locally-built server against the db file that install
+    # created (and that load populated). The driver restarts us once per
+    # query for a cold process, so this is just a relaunch against the
+    # persisted db/umbra.db — the data survives. Record the PID so ./stop
+    # (a separate process) can kill exactly this server.
+    "$SERVER" db/umbra.db &>> server.log &
+    echo $! > "$SERVER_PID_FILE"
     exit 0
 fi
 
