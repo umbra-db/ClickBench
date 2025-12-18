@@ -1,0 +1,7 @@
+traces/
+data/
+db/
+bin
+log.txt
+load_out.txt
+server.log
