@@ -6,5 +6,6 @@ sudo apt-get install -y docker.io postgresql-client gzip
 
 sudo docker pull umbradb/umbra:latest
 
+rm -rf db
 mkdir -p data db
 chmod -R 777 data db
