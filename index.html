@@ -990,6 +990,24 @@ function renderSummary(filtered_data) {
 
         const text = selectors.metric == 'load' ? (elem.load_time ? `${Math.round(elem.load_time)}s (×${ratio.toFixed(2)})` : 'stateless')
             :  selectors.metric == 'size' ? `${(elem.data_size / 1024 / 1024 / 1024).toFixed(2)} GiB (×${ratio.toFixed(2)})`
+            :  selectors.metric == 'combined' ? (() => {
+                    /// Break the combined score down into the individual
+                    /// components it is built from, so it's visible how each
+                    /// system trades off hot, cold, load and storage. All four
+                    /// are shown as the relative "×N" ratios that feed the
+                    /// weighted score (load/storage use the same neutral/penalty
+                    /// fallbacks the score does for missing values).
+                    const lukewarm = elem.tags.includes('lukewarm-cold-run');
+                    const hot = relativeQueryTime(num_queries, baseline_data, elem, 'hot');
+                    const cold = relativeQueryTime(num_queries, baseline_data, elem, 'cold');
+                    const loadRatio = elem.load_time >= 5 ? (elem.load_time / min_load_time) : 1;
+                    const sizeRatio = elem.data_size >= 1e9 ? (elem.data_size / min_data_size) : 2;
+                    const hotStr = hot ? `×${hot.toFixed(2)}` : '—';
+                    // Cold doesn't feed the combined score for lukewarm systems
+                    // (its weight is folded into hot), so flag it as n/a.
+                    const coldStr = lukewarm ? 'n/a' : (cold ? `×${cold.toFixed(2)}` : '—');
+                    return `×${ratio.toFixed(2)} (hot ${hotStr}, cold ${coldStr}, load ×${loadRatio.toFixed(2)}, storage ×${sizeRatio.toFixed(2)})`;
+                })()
             : `×${ratio.toFixed(2)}`;
 
         td_number.appendChild(document.createTextNode(text));
