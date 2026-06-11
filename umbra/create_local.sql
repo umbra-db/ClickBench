@@ -104,5 +104,5 @@ create table hits (
     refererhash           bigint       not null,
     urlhash               bigint       not null,
     clid                  integer      not null
-);
+) with (compression=zstd);
 copy hits from 'data/hits.tsv' with (format text);
