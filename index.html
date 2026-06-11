@@ -913,11 +913,22 @@ function renderSummary(filtered_data) {
         summaries = filtered_data.map(elem => relativeQueryTime(num_queries, baseline_data, elem, selectors.metric));
         document.getElementById('time-or-size').innerText = 'time';
     } else if (selectors.metric == 'combined') {
-        summaries = filtered_data.map(elem => Math.exp(
-            combined_load_time_share * Math.log(elem.load_time >= 5 ? (elem.load_time / min_load_time) : 1) +
-            combined_data_size_share * Math.log(elem.data_size >= 1e9 ? (elem.data_size / min_data_size) : 2) +
-            combined_cold_share * Math.log(relativeQueryTime(num_queries, baseline_data, elem, 'cold')) +
-            combined_hot_share * Math.log(relativeQueryTime(num_queries, baseline_data, elem, 'hot'))));
+        summaries = filtered_data.map(elem => {
+            /// Lukewarm "cold" runs don't measure true cold-cache performance,
+            /// so for those systems we drop the cold component entirely and fold
+            /// its weight into hot: load 10% / data size 10% / hot 80%.
+            const lukewarm = elem.tags.includes('lukewarm-cold-run');
+            const cold_share = lukewarm ? 0 : combined_cold_share;
+            const hot_share = lukewarm ? combined_cold_share + combined_hot_share : combined_hot_share;
+            let log_sum =
+                combined_load_time_share * Math.log(elem.load_time >= 5 ? (elem.load_time / min_load_time) : 1) +
+                combined_data_size_share * Math.log(elem.data_size >= 1e9 ? (elem.data_size / min_data_size) : 2) +
+                hot_share * Math.log(relativeQueryTime(num_queries, baseline_data, elem, 'hot'));
+            if (cold_share > 0) {
+                log_sum += cold_share * Math.log(relativeQueryTime(num_queries, baseline_data, elem, 'cold'));
+            }
+            return Math.exp(log_sum);
+        });
         document.getElementById('time-or-size').innerText = 'time and data size';
     }
 
@@ -1095,6 +1106,11 @@ function render() {
     }
     if (selectors.metric == 'cold' || selectors.metric == 'combined' || selectors.metric == 'load') {
         filtered_data = filtered_data.filter(elem => !elem.tags.includes('in-memory'));
+    }
+    /// Lukewarm "cold" runs don't measure true cold-cache performance, so they
+    /// are excluded from the Cold Run ranking by default.
+    if (selectors.metric == 'cold') {
+        filtered_data = filtered_data.filter(elem => !elem.tags.includes('lukewarm-cold-run'));
     }
 
     let nothing_selected_elem = document.getElementById('nothing-selected');
