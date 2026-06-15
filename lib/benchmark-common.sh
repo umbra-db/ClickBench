@@ -55,7 +55,16 @@
 #                          that runs after the cold/warm sweep. Default 10.
 #   BENCH_CONCURRENT_DURATION
 #                          Wall-clock window for the QPS test, in seconds.
-#                          Default 600.
+#                          Default 600. Set to 0 to skip the test (emits
+#                          null). Single-process engines should set 0: each
+#                          query forks a fresh full-machine process with no
+#                          shared scheduler, so N concurrent connections only
+#                          oversubscribe RAM instead of measuring throughput.
+#                          The rule: skip when ./start launches no shared
+#                          server (the embedded CLIs and spark variants), keep
+#                          for daemons and the in-process server wrappers
+#                          (pandas/polars/*-dataframe), which do share one
+#                          process. See issue #946.
 #   BENCH_CONCURRENT_SEED  Seed shared across systems so that connection
 #                          N hits the same query order on every engine
 #                          (the per-connection permutation is derived
