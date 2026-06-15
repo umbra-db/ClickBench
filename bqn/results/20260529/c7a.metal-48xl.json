@@ -9,8 +9,8 @@
     "tags": ["C","embedded","array language"],
     "load_time": 473,
     "data_size": 118169498884,
-    "concurrent_qps": 0.235,
-    "concurrent_error_ratio": 0,
+    "concurrent_qps": null,
+    "concurrent_error_ratio": null,
     "result": [
         [0.001, 0.001, 0.001],
         [4.122, 1.161, 1.094],
