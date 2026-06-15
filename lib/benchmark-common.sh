@@ -333,6 +333,15 @@ bench_concurrent_qps() {
     local duration="${BENCH_CONCURRENT_DURATION}"
     local seed="${BENCH_CONCURRENT_SEED}"
 
+    # Duration 0 means the test is disabled (single-process engines set this;
+    # see the BENCH_CONCURRENT_DURATION docs). Emit null and skip the restart,
+    # cache flush, and worker setup entirely.
+    if [ "$duration" -le 0 ]; then
+        echo "Concurrent QPS: null"
+        echo "Concurrent error ratio: null"
+        return 0
+    fi
+
     # Read the same query file that bench_run_query consumed.
     local queries=() q
     while IFS= read -r q; do
