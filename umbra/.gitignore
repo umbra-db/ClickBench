@@ -1,0 +1,8 @@
+traces/
+data/
+db/
+bin
+log.txt
+run-benchmark.log
+server.log
+server.pid

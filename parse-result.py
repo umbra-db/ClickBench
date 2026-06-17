@@ -6,8 +6,9 @@ Reads the log path from argv[1] (default /tmp/umbra-bench.log) and emits the
 result JSON on stdout. Metadata (system/proprietary/hardware/tuned/tags) comes
 from template.json in the system directory; date/machine/cluster_size and the
 "system" title bits are supplied via the BENCH_DATE / BENCH_MACHINE /
-BENCH_CLUSTER_SIZE environment variables (run-benchmark sets these). The title
-is "Umbra", with an optional TAG in parentheses.
+BENCH_CLUSTER_SIZE / BENCH_VERSION / BENCH_VARIANT environment variables
+(run-benchmark sets these). The title is "Umbra <version>" plus " (local)" or
+" (trace)" when BENCH_VARIANT is set.
 
 The log shape is what lib/benchmark-common.sh prints:
   [t1,t2,t3],            one line per query, in order (cold, warm, warm)
@@ -65,12 +66,18 @@ if data_size is None:
 
 template = json.loads(Path("template.json").read_text())
 
-# Title: "Umbra", with an optional TAG in parentheses
-# (e.g. "Umbra (prefetch)") to match the existing result files.
+# Title: "Umbra <version>", with the run-mode variant and optional tag in
+# parentheses (e.g. "Umbra 25.07 (local)" or "Umbra 26.06 (local, prefetch)")
+# to match the existing result files.
+version = os.environ.get("BENCH_VERSION", "")
+variant = os.environ.get("BENCH_VARIANT", "")
 tag = os.environ.get("BENCH_TAG", "")
 system = template["system"]
-if tag:
-    system += f" ({tag})"
+if version:
+    system += f" {version}"
+parens = [p for p in (variant, tag) if p]
+if parens:
+    system += f" ({', '.join(parens)})"
 
 out = {
     "system": system,
