@@ -1,9 +1,7 @@
 #!/bin/bash
 set -eu
 
-mkdir -p data
-mv hits.parquet data/
-chmod -R 777 data
+source ../local-env.sh
 
 # S3 remote storage credentials for the create remote storage statement in
 # create.sql. create-bucket writes these to .s3-env; source it if present and
@@ -23,22 +21,38 @@ here="$(cd "$(dirname "$0")" && pwd)"
 
 s3_uri="$UMBRA_S3_URI"
 
-# create.sql for umbra registers the S3 remote storage, creates the
-# (backend=cloud) table, and ingests via the parquetview INSERT. Use
-# ON_ERROR_STOP=1 so a mid-load failure (e.g. the box runs out of memory
-# and Umbra survives but the transaction errored) bubbles up instead of
-# leaving a half-loaded table.
+# hits.parquet is fetched by ./install (outside this timed ./load step) into
+# data/. Both create files register the S3 remote storage, create the
+# (backend=cloud) table, and ingest in one script. Use ON_ERROR_STOP=1 so a
+# mid-load failure (e.g. the box runs out of memory and Umbra survives but the
+# transaction errored) bubbles up instead of leaving a half-loaded table.
+#
+# create.sql (Docker) reads /data/hits.parquet from the container's '/data'
+# bind mount; create_local.sql reads the host-relative data/hits.parquet
+# (the local server's CWD is the umbra-s3 dir). Both ingest via umbra.parquetview.
+CREATE_FILE=create.sql
+[ "$LOCAL" -eq 1 ] && CREATE_FILE=create_local.sql
 PGPASSWORD=postgres psql -p 5432 -h 127.0.0.1 -U postgres \
     -v ON_ERROR_STOP=1 \
     -v s3_bucket="$s3_uri" \
     -v s3_access_key_id="$UMBRA_S3_ACCESS_KEY_ID" \
     -v s3_access_key="$UMBRA_S3_ACCESS_KEY" \
-    -f create.sql
+    -f "$CREATE_FILE"
 
-# Belt-and-braces row-count check. Umbra has been observed to leave a
-# partial table on memory-constrained hosts (16 GB c6a.4xlarge can't
-# hold the full mmap working set), letting the benchmark proceed and
-# producing implausibly fast warm timings on the surviving subset.
+if [ "$TRACE" -eq 1 ]; then
+    mkdir -p "$TRACE_DIR"
+    # Zero the stop counter that ./stop bumps to tell the phases apart.
+    # ./load runs exactly once, before the query loop, so this is the clean
+    # point to reset it — a value left over from a previous run would
+    # misclassify every phase. The load's own trace isn't dumped here; the
+    # cold-cycle ./stop before query 1 (the first stop) flushes it to
+    # load.trace, keeping every dump on the same shutdown boundary.
+    echo 0 > "$TRACE_DIR/.stops"
+fi
+
+# Row-count check. Umbra has been observed to leave a partial table on memory-
+# constrained hosts (the full mmap working set doesn't fit), letting the
+# benchmark proceed with implausibly fast timings on the surviving subset.
 # ClickBench's hits dataset is exactly 99,997,497 rows.
 expected=99997497
 got=$(PGPASSWORD=postgres psql -p 5432 -h 127.0.0.1 -U postgres -tAq \
@@ -48,5 +62,4 @@ if [ "$got" -ne "$expected" ]; then
     exit 1
 fi
 
-rm -f data/hits.parquet
 sync

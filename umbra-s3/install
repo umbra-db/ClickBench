@@ -1,10 +1,44 @@
 #!/bin/bash
 set -eu
 
+source ../local-env.sh
+
+# Fetch the dataset here, in install, rather than in ./load: the driver times
+# ./load (it becomes the reported "Load time"), and pulling ~15 GB of parquet
+# should not be charged to the ingest. Kept across runs (downloaded only when
+# absent); the driver's own download step stays disabled (BENCH_DOWNLOAD_SCRIPT
+# in benchmark.sh) because it can't target data/. The subsequent chmod of data/
+# in each branch below covers the downloaded file. Both the local build and the
+# Docker image ingest data/hits.parquet via umbra.parquetview (create.sql /
+# create_local.sql).
+if [ ! -f data/hits.parquet ]; then
+    ../lib/download-hits-parquet-single data
+fi
+
+if [ "$LOCAL" -eq 1 ]; then
+    # Local binaries live under ./bin (provided out-of-band, gitignored), so
+    # there's no image to pull. We do need psql + the decompressor, and a
+    # freshly-created empty database file for the server to open. createdb is
+    # an offline init step: it must run once, before start launches the
+    # server, and must NOT re-run on the per-query restarts (that would wipe
+    # the loaded table) — hence it lives here in install, not in start.
+    sudo apt-get update -y
+    sudo apt-get install -y postgresql-client gzip pigz
+    mkdir -p data
+    chmod -R 777 data
+    rm -rf db
+    mkdir db
+    chmod -R 777 db
+    "$SQL" -createdb db/umbra.db <<<"ALTER ROLE postgres WITH LOGIN SUPERUSER PASSWORD 'postgres';"
+    [ "$TRACE" -eq 1 ] && mkdir -p "$TRACE_DIR"
+    exit 0
+fi
+
 sudo apt-get update -y
 sudo apt-get install -y docker.io postgresql-client gzip
 
-sudo docker pull umbradb/umbra:latest
+sudo docker pull "umbradb/umbra:${VERSION}"
 
+rm -rf db
 mkdir -p data db
 chmod -R 777 data db

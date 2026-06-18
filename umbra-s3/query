@@ -6,6 +6,8 @@
 # Exit non-zero on error.
 set -e
 
+source ../local-env.sh 2>/dev/null || true
+
 query=$(cat)
 
 raw=$(PGPASSWORD=postgres timeout 300s psql -p 5432 -h 127.0.0.1 -U postgres -v ON_ERROR_STOP=1 -t -c '\timing' -c "$query" 2>&1) && exit_code=0 || exit_code=$?

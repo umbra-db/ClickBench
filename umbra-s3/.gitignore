@@ -1,3 +1,11 @@
+traces/
 data/
 db/
+bin
+log.txt
+run-benchmark.log
+server.log
+server.pid
 .s3-env
+minio-data/
+minio.log

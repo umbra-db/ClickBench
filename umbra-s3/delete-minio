@@ -1,0 +1,23 @@
+#!/bin/bash
+set -eu
+
+# Local-object-storage analog of delete-bucket: stop the MinIO server that
+# create-minio started and clean up its state (the minio-data/ store and
+# .s3-env). Idempotent: a server that isn't running is a no-op.
+
+here="$(cd "$(dirname "$0")" && pwd)"
+envfile="$here/.s3-env"
+data_dir="$here/minio-data"
+log="$here/minio.log"
+
+# Stop exactly the MinIO serving this directory's store (don't touch unrelated
+# minio servers that might share the host).
+if pkill -f "minio server $data_dir" 2>/dev/null; then
+    echo "delete-minio: stopped MinIO"
+else
+    echo "delete-minio: no MinIO server for $data_dir was running"
+fi
+
+rm -rf "$data_dir" "$log"
+rm -f "$envfile"
+echo "delete-minio: done (removed minio-data/, minio.log, .s3-env)"
