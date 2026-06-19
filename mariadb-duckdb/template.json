@@ -1,0 +1,8 @@
+{
+    "system": "MariaDB with DuckDB storage engine",
+    "cluster_size": 1,
+    "proprietary": "no",
+    "hardware": "cpu",
+    "tuned": "no",
+    "tags": ["C++", "column-oriented", "MySQL compatible", "embedded DuckDB"]
+}

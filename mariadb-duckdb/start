@@ -1,0 +1,14 @@
+#!/bin/bash
+set -eu
+
+if sudo mariadb -e "SELECT 1" >/dev/null 2>&1; then
+    exit 0
+fi
+sudo systemctl start mariadb
+# Wait up to 30s for the server to accept connections.
+for _ in $(seq 1 30); do
+    sudo mariadb -e "SELECT 1" >/dev/null 2>&1 && exit 0
+    sleep 1
+done
+echo "ERROR: mariadb did not start within 30s" >&2
+exit 1
