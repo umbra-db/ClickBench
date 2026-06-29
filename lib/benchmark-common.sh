@@ -17,8 +17,8 @@
 #                          stop/start is meaningful for this system.
 #                            yes — system has a daemon (or in-process server
 #                                  wrapper) whose lifecycle matters. The
-#                                  cold cycle is stop -> wait_stopped ->
-#                                  drop_caches -> start -> check.
+#                                  cold cycle is ./stop -> ./wait_stopped ->
+#                                  ./drop_caches -> ./start -> ./check.
 #                            no  — system has no daemon: ./start, ./stop,
 #                                  and ./check are no-ops (embedded CLIs
 #                                  like clickhouse-local, duckdb,
