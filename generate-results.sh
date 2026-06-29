@@ -12,8 +12,7 @@ FIRST=1
 
 # Build "<system>/<basename> <full-path>" lines, then keep the last (latest)
 # row per key — sorted ascending by date, since YYYYMMDD sorts lexically.
-find . -mindepth 4 -maxdepth 4 -path './*/results/*/*.json' -print \
-    | sed 's#^\./##' \
+LANG="" ls -1 */results/*/*.json \
     | grep -Ev '^(hardware|versions|gravitons)/' \
     | sort \
     | awk -F/ '{ print $1"/"$NF" "$0 }' \
