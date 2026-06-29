@@ -76,6 +76,7 @@ Tl;dr: *All Benchmarks Are ~~Bastards~~ Liars*.
 To add a new entry, copy-paste one of the existing directories and edit the files accordingly:
 
 - `benchmark.sh`: this is the main script which runs the benchmark on a fresh VM; Ubuntu 24.04 or newer should be used by default. For databases that can be installed locally, the script should be able to run in a fully automated manner so it can be used in the benchmark automation (cloud-init). It should output the results in the following format: - one or more lines `Load time: 1234` with the time in seconds; - a line `Data size: 1234567890` with the data size in bytes; the data size should include indexes and transaction logs if applicable; - 43 consecutive lines in the form of `[1.234, 5.678, 9.012],` for the runtimes of every query; - the output may include other lines with the logs, that are not used for the report. For managed databases, if the setup requires clicking in a UI, write a `README.md` instead.
+- `check`, `data-size`, `install`, `load`, `query`, `start`, `stop`: These scripts perform sub-tasks during benchmarking, see `lib/benchmark-common.sh` for an overview.
 - `README.md`: contains comments and observations if needed. For managed databases, it can describe the setup procedure to be used instead of a shell script.
 - `create.sql`: a CREATE TABLE statement. If it's a NoSQL system, another file like `wtf.json` can be used instead.
 - `queries.sql`: contains 43 ClickBench queries to run;
