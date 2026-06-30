@@ -7,5 +7,4 @@ export BENCH_DOWNLOAD_SCRIPT=""
 # BENCH_DURABLE=yes still gives us cold/warm tries (the local
 # pg_duckdb container is what we restart; the MotherDuck side caches
 # its own way).
-export BENCH_DURABLE=yes
 exec ../lib/benchmark-common.sh
