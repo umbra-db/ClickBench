@@ -111,6 +111,41 @@ With these, `1.1.54019` runs 62 of the 75 queries; the 13 nulls are genuine
 era limitations (e.g. `Nullable`, which mgbench `logs1`/`logs3` need, postdates
 that build; likewise a few `toYYYYMM` / `replaceOne` / `COUNT(DISTINCT)` cases).
 
+### Building the never-published versions from source
+
+The earliest releases — the bare-number tags `53973`..`54011` and a few `1.1.x`
+that were never pushed as an image or package (`1.1.54165`, `54318`, `54335`,
+`54336`, `54358`, `54362`, `54370`) — are resurrected by compiling them from
+source in their contemporary environment (`build-from-source/`):
+
+```bash
+cd build-from-source
+./build.sh 1.1.54165 v1.1.54165-stable   # one version -> clickhouse-built:1.1.54165
+./build-all.sh                            # everything in versions.txt
+```
+
+`Dockerfile.ubuntu1604` pins the era toolchain (Ubuntu 16.04) and builds each
+tag in a contemporary environment, packaging a runnable image
+(`clickhouse-built:<v>`) with IPv4 listening, a `clickhouse` multi-call shim,
+and the pre-created data dirs the 2016 server needs. `build-all.sh` runs several
+builds concurrently (`JOBS`, default 6) since a single `make -j$(nproc)` doesn't
+saturate the cores on these small codebases. `list-versions.sh` routes these
+versions to their `clickhouse-built:<v>` image automatically.
+
+What it took to make the old tree build on a modern host (encoded in the
+Dockerfile and `versions.txt`):
+- **Compiler escalates by era** — the required GCC is recorded per version in
+  `versions.txt` (4th column): gcc-5 for the 2016 tags, gcc-6 for `1.1.54318`,
+  gcc-7 for `1.1.54335`+ (pulled from the `ubuntu-toolchain-r` PPA via `ARG GCC`).
+- **Strip `-Werror`** from the project's cmake (the tree hardcodes it and leaks
+  clang-only `-Wno-*` flags into the GCC build).
+- **Submodules** — the 2016 tags vendor contrib (none); the later `1.1.x` use
+  submodules, one of which (`contrib/zookeeper`) points at a now-deleted repo, so
+  we init submodules tolerantly and let cmake fall back to system
+  `libzookeeper-mt-dev`.
+- The slow apt layer is keyed only on the GCC version, so it is cached and shared
+  across all builds of the same compiler.
+
 ## Notes and limitations
 
 - The 8 oldest builds (`1.1.54011`, `54165`, `54318`, `54335`, `54336`,

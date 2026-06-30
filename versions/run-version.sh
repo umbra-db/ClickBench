@@ -1,13 +1,20 @@
 #!/usr/bin/env bash
 # Benchmark a single ClickHouse version inside Docker.
 #
-#   ./run-version.sh <version> [image_ref]
+#   ./run-version.sh <version> [image_ref] [phase]
 #
 # Spins up the server, creates the six tables with version-appropriate DDL
 # (create/create.sh), loads the prepared Native files with a plain
 # `clickhouse-client INSERT ... FORMAT Native`, then times every query in
 # queries/{mgbench,ssb,hits,taxi}.sql (TRIES runs each, dropping the page
 # cache between queries) and writes results/<version>.json.
+#
+# phase (default "all") splits load from benchmark so run-all.sh can load many
+# versions in parallel and then benchmark them one at a time:
+#   load  - start the container and load data; LEAVE it running.
+#   bench - attach to the already-loaded container, run queries, write the
+#           result, then remove the container.
+#   all   - load + bench + teardown in one go (single-version use).
 #
 # image_ref comes from list-versions.sh: either "<repo>/clickhouse-server:<v>"
 # or the literal "package" (install the .deb into Ubuntu — fallback provider).
@@ -17,9 +24,14 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DATA="${DATA:-${HERE}/prepare-data/data}"
 TRIES="${TRIES:-3}"
 MEM=100000000000   # 100G per-query memory limit
+# Datasets to actually load. Queries for any skipped dataset still run (and
+# report null). E.g. LOAD_DATASETS="hits ssb mgbench" skips the big taxi load
+# while keeping its file on disk.
+LOAD_DATASETS="${LOAD_DATASETS:-hits ssb mgbench taxi}"
 
-VERSION="${1:?usage: run-version.sh <version> [image_ref]}"
+VERSION="${1:?usage: run-version.sh <version> [image_ref] [phase]}"
 IMAGE="${2:-}"
+PHASE="${3:-all}"
 [ -z "${IMAGE}" ] && IMAGE="$(./list-versions.sh | awk -v v="${VERSION}" '$1==v{print $2}')"
 [ -z "${IMAGE}" ] && { echo "no image for ${VERSION}" >&2; exit 1; }
 
@@ -37,7 +49,9 @@ declare -A TABLES=(
 QUERY_ORDER="mgbench ssb hits taxi"
 
 cleanup() { sudo docker rm -f "${CONTAINER}" >/dev/null 2>&1; }
-trap cleanup EXIT
+# The load phase must leave the container running for the later bench phase;
+# all/bench tear it down on exit.
+[ "${PHASE}" != "load" ] && trap cleanup EXIT
 
 # Client dispatch. Modern/most images bundle a client (`exec` mode). The oldest
 # server images (1.1.54xxx, early 18.x) ship only clickhouse-server, so we drive
@@ -100,7 +114,7 @@ start_server() {
 # queries report null.
 load_data() {
     local ds pair table file
-    for ds in hits ssb mgbench taxi; do
+    for ds in ${LOAD_DATASETS}; do
         for pair in ${TABLES[$ds]}; do
             table="${pair%%:*}"; file="${pair##*:}"
             [ -f "${DATA}/${file}" ] || { echo "missing ${file}, skipping ${table}" >&2; continue; }
@@ -128,32 +142,63 @@ run_query() {
     echo "${out}]"
 }
 
-# ---- run ----
-start_server || exit 1
-ACTUAL=$(client --query "SELECT version()" 2>/dev/null | tr -d '\r')
-echo "running benchmark on ${VERSION} (server reports ${ACTUAL})" >&2
-load_data
-
-{
-    echo '{'
-    echo "    \"version\": \"${VERSION}\","
-    echo "    \"actual_version\": \"${ACTUAL}\","
-    echo '    "result":'
-    echo '    ['
-    FIRST=1
-    for ds in ${QUERY_ORDER}; do
-        while IFS= read -r query; do
-            [ -z "${query}" ] && continue
-            query="${query%;}"                       # strip trailing semicolon
-            drop_caches
-            [ "${FIRST}" = 0 ] && echo ','
-            FIRST=0
-            printf '%s' "$(run_query "${query}")"
-        done < "${HERE}/queries/${ds}.sql"
+# Attach to an already-running, already-loaded container (bench phase): detect
+# the client mode without (re)starting or wiping the container.
+detect_client() {
+    sudo docker ps -q -f "name=^${CONTAINER}$" | grep -q . || { echo "container ${CONTAINER} not running" >&2; return 1; }
+    [ "${IMAGE}" != "package" ] && [ -n "${CLIENT_IMAGE}" ] && sudo docker pull "${CLIENT_IMAGE}" >/dev/null 2>&1
+    local i
+    for i in $(seq 1 30); do
+        if exec_client --query "SELECT 1" >/dev/null 2>&1; then CLIENT_MODE=exec; return 0; fi
+        if sidecar_client --query "SELECT 1" </dev/null >/dev/null 2>&1; then CLIENT_MODE=sidecar; return 0; fi
+        sleep 1
     done
-    echo
-    echo '    ]'
-    echo '}'
-} > "${OUT}"
+    return 1
+}
 
-echo "wrote ${OUT}" >&2
+# Time every query and write results/<version>.json.
+run_benchmark() {
+    local ACTUAL ds query FIRST=1
+    ACTUAL=$(client --query "SELECT version()" 2>/dev/null | tr -d '\r')
+    echo "benchmarking ${VERSION} (server reports ${ACTUAL})" >&2
+    {
+        echo '{'
+        echo "    \"version\": \"${VERSION}\","
+        echo "    \"actual_version\": \"${ACTUAL}\","
+        echo '    "result":'
+        echo '    ['
+        for ds in ${QUERY_ORDER}; do
+            while IFS= read -r query; do
+                [ -z "${query}" ] && continue
+                query="${query%;}"                       # strip trailing semicolon
+                drop_caches
+                [ "${FIRST}" = 0 ] && echo ','
+                FIRST=0
+                printf '%s' "$(run_query "${query}")"
+            done < "${HERE}/queries/${ds}.sql"
+        done
+        echo
+        echo '    ]'
+        echo '}'
+    } > "${OUT}"
+    echo "wrote ${OUT}" >&2
+}
+
+# ---- run ----
+case "${PHASE}" in
+    load)
+        start_server || exit 1
+        echo "loading ${VERSION} ..." >&2
+        load_data
+        echo "loaded ${VERSION}; leaving container running for bench phase" >&2
+        ;;
+    bench)
+        detect_client || { echo "cannot attach to ${VERSION} for bench" >&2; exit 1; }
+        run_benchmark
+        ;;
+    all|*)
+        start_server || exit 1
+        load_data
+        run_benchmark
+        ;;
+esac

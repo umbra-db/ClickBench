@@ -68,7 +68,21 @@ resolve_image() {
 
 # --- normalise version_date.tsv to "version<TAB>date", version-sorted ----------
 NORM=$(sed -E 's/^v//; s/-(stable|lts|testing|prestable)\t/\t/' "${VD}" \
-       | grep -E '^[0-9]+\.[0-9]+\.[0-9]+' | sort -V)
+       | grep -E '^[0-9]+\.[0-9]+\.[0-9]+' \
+       | grep -v '^1\.1\.54011[[:space:]]' \
+       | sort -V)   # 1.1.54011 == bare tag 54011 (built from source); avoid the duplicate
+
+# Versions we resurrect by building from source (build-from-source/versions.txt):
+# their provider is the locally-built image clickhouse-built:<v>. This both
+# overrides the "unavailable" 1.1.x releases and adds the bare-number early tags
+# (53973..54011) that predate version_date.tsv.
+BUILT_FILE="${HERE}/build-from-source/versions.txt"
+declare -A BUILT_DATE=()
+if [ -f "${BUILT_FILE}" ]; then
+    while IFS=$'\t' read -r bv _btag bdate _bgcc; do
+        [ -n "${bv}" ] && BUILT_DATE["${bv}"]="${bdate}"
+    done < "${BUILT_FILE}"
+fi
 
 emit() {  # version date  -> resolve provider and print the line
     local v="$1" date="$2" image
@@ -77,6 +91,8 @@ emit() {  # version date  -> resolve provider and print the line
         # No image. packages.clickhouse.com ships .tgz from 21.1 on; older = gone.
         [ "${v%%.*}" -ge 21 ] 2>/dev/null && image="package" || image="unavailable"
     fi
+    # Prefer a from-source build where we have one (resurrects the oldest).
+    [ "${image}" = "unavailable" ] && [ -n "${BUILT_DATE[$v]:-}" ] && image="clickhouse-built:${v}"
     printf '%s\t%s\t%s\n' "${v}" "${image}" "${date}"
 }
 
@@ -99,4 +115,11 @@ emit() {  # version date  -> resolve provider and print the line
         done < <(awk -F'\t' -v k="${key}" '{split($1,p,"."); if (p[1]"."p[2]==k) print}' <<<"${NORM}" | sort -rV)
         if [ -z "${chosen}" ]; then emit "${newest_v}" "${newest_d}"; fi   # none runnable -> newest as unavailable
     done
-} | sort -V
+
+    # Bare-number early tags (53973..54011) predate version_date.tsv; add them
+    # directly with their from-source images.
+    for bv in "${!BUILT_DATE[@]}"; do
+        case "${bv}" in *.*) continue ;; esac   # skip the 1.1.x ones (handled above)
+        printf '%s\tclickhouse-built:%s\t%s\n' "${bv}" "${bv}" "${BUILT_DATE[$bv]}"
+    done
+} | sort -t$'\t' -k3,3 -k1,1V   # chronological by release date
