@@ -12,7 +12,7 @@
 export HOME="${HOME:-/root}"
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -y
-apt-get install -y docker.io git curl jq zstd
+apt-get install -y docker.io git wget curl jq zstd
 systemctl enable --now docker
 
 git clone --depth 1 'https://github.com/@repo@.git' --branch '@branch@' ClickBench
@@ -33,7 +33,7 @@ BUCKET='https://clickhouse-public-datasets.s3.amazonaws.com/versions-benchmark'
 # Download only the files for the datasets we will load; -f so a missing file
 # (e.g. ssb/taxi not uploaded yet) is skipped and run-version.sh reports its
 # queries as null rather than failing.
-fetch() { curl -fsS "${BUCKET}/$1" -o "${DATADIR}/$1" || echo "skip $1 (not in bucket)"; }
+fetch() { wget --continue --progress=dot:giga -P "${DATADIR}" "${BUCKET}/$1" || echo "skip $1 (not in bucket)"; }
 for ds in ${DATASETS}; do
     case "${ds}" in
         hits)    fetch hits.native.zst ;;
