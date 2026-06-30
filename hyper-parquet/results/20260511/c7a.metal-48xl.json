@@ -9,8 +9,8 @@
     "tags": ["C++","column-oriented","stateless"],
     "load_time": 64,
     "data_size": 14737666736,
-    "concurrent_qps": 6.622,
-    "concurrent_error_ratio": 0,
+    "concurrent_qps": null,
+    "concurrent_error_ratio": null,
     "result": [
         [0.628, 0.252, 0.247],
         [0.644, 0.252, 0.253],
