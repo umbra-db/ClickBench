@@ -24,16 +24,13 @@ timeout="${timeout:-18000}"                 # load + (optional source build) + q
 volume="${volume:-500}"                     # GB; raise well past 1000 if including taxi
 
 # Resolve the version against list-versions.sh: accept an exact version
-# (26.6.1.1193, 1.1.54378, 53973) or an unambiguous prefix at a dot boundary
-# (26.6 -> 26.6.1.1193, since exactly one patch per YY.MM is kept).
+# (26.6.1.1193, 1.1.54378, 53973) or a prefix at a dot boundary, choosing the
+# latest match by version sort (26.6 -> 26.6.1.1193, 24 -> 24.12.x, 1.1 -> the
+# newest 1.1.x).
 LV="$(./list-versions.sh)"
 line="$(awk -F'\t' -v v="${VERSION}" '$1==v' <<<"${LV}")"
 if [ -z "${line}" ]; then
-    line="$(awk -F'\t' -v v="${VERSION}" 'index($1, v".")==1' <<<"${LV}")"
-    n="$(grep -c . <<<"${line}"; true)"
-    if [ "${n}" -gt 1 ]; then
-        echo "ambiguous version '${VERSION}', matches:" >&2; cut -f1 <<<"${line}" >&2; exit 1
-    fi
+    line="$(awk -F'\t' -v v="${VERSION}" 'index($1, v".")==1' <<<"${LV}" | sort -V | tail -1)"
 fi
 [ -z "${line}" ] && { echo "unknown version: ${VERSION}" >&2; exit 1; }
 VERSION="$(cut -f1 <<<"${line}")"   # canonicalise to the full version
