@@ -23,10 +23,23 @@ tries="${tries:=3}"
 timeout="${timeout:-18000}"                 # load + (optional source build) + queries
 volume="${volume:-500}"                     # GB; raise well past 1000 if including taxi
 
-# Resolve the image for this version.
-image="$(./list-versions.sh | awk -F'\t' -v v="${VERSION}" '$1==v{print $2}')"
-[ -z "${image}" ] && { echo "unknown version: ${VERSION}" >&2; exit 1; }
+# Resolve the version against list-versions.sh: accept an exact version
+# (26.6.1.1193, 1.1.54378, 53973) or an unambiguous prefix at a dot boundary
+# (26.6 -> 26.6.1.1193, since exactly one patch per YY.MM is kept).
+LV="$(./list-versions.sh)"
+line="$(awk -F'\t' -v v="${VERSION}" '$1==v' <<<"${LV}")"
+if [ -z "${line}" ]; then
+    line="$(awk -F'\t' -v v="${VERSION}" 'index($1, v".")==1' <<<"${LV}")"
+    n="$(grep -c . <<<"${line}"; true)"
+    if [ "${n}" -gt 1 ]; then
+        echo "ambiguous version '${VERSION}', matches:" >&2; cut -f1 <<<"${line}" >&2; exit 1
+    fi
+fi
+[ -z "${line}" ] && { echo "unknown version: ${VERSION}" >&2; exit 1; }
+VERSION="$(cut -f1 <<<"${line}")"   # canonicalise to the full version
+image="$(cut -f2 <<<"${line}")"
 [ "${image}" = "unavailable" ] && { echo "${VERSION} is unavailable (no image/package/source)" >&2; exit 1; }
+echo "resolved to ${VERSION} (${image})"
 
 # For source-built versions, get the tag and required GCC from versions.txt.
 tag="-"; gcc="5"
