@@ -131,12 +131,41 @@ load_data() {
 
 drop_caches() { sync; echo 3 | sudo tee /proc/sys/vm/drop_caches >/dev/null 2>&1; }
 
+server_alive() { client --query "SELECT 1" >/dev/null 2>&1; }
+
+# Bring the server back after a crash. An OOM kill takes down clickhouse-server
+# (PID 1 for image providers), so the container exits — but its data layer
+# survives, so `docker start` restarts it with the loaded tables intact. For the
+# package provider the container (PID 1 = sleep) stays up, so relaunch the daemon.
+revive_server() {
+    if [ "$(sudo docker inspect -f '{{.State.Running}}' "${CONTAINER}" 2>/dev/null)" != "true" ]; then
+        sudo docker start "${CONTAINER}" >/dev/null 2>&1
+    elif [ "${IMAGE}" = "package" ]; then
+        sudo docker exec -d "${CONTAINER}" clickhouse-server --daemon --config /etc/clickhouse-server/config.xml 2>/dev/null
+    fi
+    local i
+    for i in $(seq 1 "${READY_TIMEOUT:-90}"); do server_alive && return 0; sleep 1; done
+    return 1
+}
+
 # Run one query TRIES times, print a JSON array "[t1, t2, t3]" (null on error).
+# If the server dies mid-query (e.g. OOM-killed), revive it and retry up to
+# CRASH_RETRIES times so one heavy query doesn't null out the whole version.
 run_query() {
-    local query="$1" i res out="["
+    local query="$1" i res crash out="["
     for i in $(seq 1 "${TRIES}"); do
-        res=$(printf '%s' "${query}" | client --time --max_memory_usage="${MEM}" --format=Null 2>&1)
-        if [[ "${res}" =~ ^[0-9]+\.[0-9]+$ ]]; then out+="${res}"; else out+="null"; fi
+        crash=0
+        while :; do
+            res=$(printf '%s' "${query}" | client --time --max_memory_usage="${MEM}" --format=Null 2>&1)
+            [[ "${res}" =~ ^[0-9]+\.[0-9]+$ ]] && break
+            if ! server_alive && [ "${crash}" -lt "${CRASH_RETRIES:-2}" ]; then
+                crash=$((crash + 1))
+                echo "${VERSION}: server died mid-query (likely OOM); reviving (retry ${crash})" >&2
+                revive_server && continue
+            fi
+            res="null"; break
+        done
+        out+="${res}"
         [ "${i}" -ne "${TRIES}" ] && out+=", "
     done
     echo "${out}]"
