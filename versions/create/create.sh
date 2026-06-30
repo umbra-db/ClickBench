@@ -26,7 +26,11 @@ TABLE="${2:?usage: create.sh <version> <table>}"
 new_syntax() {
     local major minor patch
     IFS=. read -r major minor patch _ <<<"$VERSION"
-    if [ "$major" = "1" ] && [ "$minor" = "1" ]; then
+    if [[ "$VERSION" =~ ^[0-9]+$ ]]; then
+        # Bare build number (earliest 2016 releases, e.g. 53973..54011): custom
+        # partitioning landed at build 54310, and all bare tags predate it.
+        [ "$VERSION" -ge 54310 ]
+    elif [ "$major" = "1" ] && [ "$minor" = "1" ]; then
         [ "${patch:-0}" -ge 54310 ]
     else
         [ "$major" -ge 18 ]
