@@ -85,6 +85,33 @@ TAXI_GLOB='trips_xa[a-n].csv.gz' ./prepare-data/taxi.sh   # ~14 of 175 files
 Smaller `HITS_PARTS` / `SSB_SCALE` reduce the others similarly. The runner is
 unchanged — only the prepared file sizes differ.
 
+## Running in the cloud (unattended)
+
+Like the main ClickBench, each version can be benchmarked on its own fresh VM
+that self-terminates and sends its result to the sink:
+
+```bash
+./run-benchmark.sh 1.1.54378            # one version on a c6a.4xlarge
+machine=c6a.metal ./run-benchmark.sh 24.8.1.1
+datasets="hits ssb mgbench taxi" ./run-benchmark.sh 25.1.1.1   # include taxi
+./run-all-benchmarks.sh                 # one VM per runnable version
+```
+
+`run-benchmark.sh` resolves the version's image via `list-versions.sh`, renders
+`cloud-init.sh.in`, and starts an EC2 instance (terminate-on-shutdown, capacity
+retry). The VM installs Docker, downloads the prepared Native files from
+`s3://clickhouse-public-datasets/versions-benchmark/*.native.zst`, builds the
+image from source if the version has none (`clickhouse-built:*`, using the tag +
+GCC from `build-from-source/versions.txt`), runs `run-version.sh`, and POSTs the
+result JSON (enriched with the machine type, `kind:"versions-benchmark"`) plus
+the log to `sink.data` on play.clickhouse.com. A server-side materialized view
+turns those into the published report, exactly as the main benchmark does.
+
+Notes: taxi is skipped by default (`datasets="hits ssb mgbench"`) — include it
+only with a much larger `volume=`. While this branch is unmerged, pass
+`branch=versions-benchmark-rework`. Only `hits` and `mgbench` are in the bucket
+so far; missing dataset files are skipped (their queries report null).
+
 ## Query set
 
 75 queries in a fixed order: mgbench (15) + Star Schema Benchmark (13) +

@@ -1,0 +1,82 @@
+#!/bin/bash -x
+
+# Cloud-init for the Versions Benchmark: benchmark ONE ClickHouse version on a
+# fresh VM, unattended, and send the result to the sink (sink.data on
+# play.clickhouse.com), then terminate. Rendered from this template by
+# run-benchmark.sh (placeholders @version@ etc. are substituted there).
+#
+# Flow: install Docker -> download the prepared Native files from the public
+# bucket -> (build the image from source if this version has no published one)
+# -> run-version.sh -> POST the result JSON + log to the sink -> shutdown.
+
+export HOME="${HOME:-/root}"
+export DEBIAN_FRONTEND=noninteractive
+apt-get update -y
+apt-get install -y docker.io git curl jq zstd
+systemctl enable --now docker
+
+git clone --depth 1 'https://github.com/@repo@.git' --branch '@branch@' ClickBench
+cd ClickBench/versions
+
+VERSION='@version@'
+IMAGE='@image@'
+TAG='@tag@'
+GCC='@gcc@'
+DATASETS='@datasets@'
+export TRIES='@tries@'
+export LOAD_DATASETS="${DATASETS}"
+
+DATADIR=prepare-data/data
+mkdir -p "${DATADIR}"
+BUCKET='https://clickhouse-public-datasets.s3.amazonaws.com/versions-benchmark'
+
+# Download only the files for the datasets we will load; -f so a missing file
+# (e.g. ssb/taxi not uploaded yet) is skipped and run-version.sh reports its
+# queries as null rather than failing.
+fetch() { curl -fsS "${BUCKET}/$1" -o "${DATADIR}/$1" || echo "skip $1 (not in bucket)"; }
+for ds in ${DATASETS}; do
+    case "${ds}" in
+        hits)    fetch hits.native.zst ;;
+        ssb)     fetch ssb.native.zst ;;
+        mgbench) fetch mgbench1.native.zst; fetch mgbench2.native.zst; fetch mgbench3.native.zst ;;
+        taxi)    fetch taxi.native.zst ;;
+    esac
+done
+
+# Versions with no published Docker image are built from source on this VM.
+if [[ "${IMAGE}" == clickhouse-built:* ]]; then
+    bash build-from-source/build.sh "${VERSION}" "${TAG}" "${GCC}" 2>&1 | tail -n 50
+fi
+
+echo "=== benchmarking ${VERSION} (image ${IMAGE}, datasets: ${DATASETS}) ==="
+timeout @timeout@ ./run-version.sh "${VERSION}" "${IMAGE}" all 2>&1 | tee -a log
+
+MACHINE=$(curl -sS -H "X-aws-ec2-metadata-token: $(curl -X PUT 'http://169.254.169.254/latest/api/token' -sS -H 'X-aws-ec2-metadata-token-ttl-seconds: 21600')" 'http://169.254.169.254/latest/meta-data/instance-type')
+echo "machine: ${MACHINE}, total time: ${SECONDS}s" | tee -a log
+
+# Build the result payload: the version's result JSON enriched with run metadata,
+# as one compact line, and send it to the sink (sink.data). A server-side MV
+# parses these into the versions report, mirroring the main ClickBench sink.
+RESULTS_URL='https://play.clickhouse.com/?user=sink&query=INSERT+INTO+data+FORMAT+RawBLOB'
+if [ -f "results/${VERSION}.json" ]; then
+    jq -c --arg machine "${MACHINE}" --arg kind 'versions-benchmark' \
+        '. + {kind: $kind, machine: $machine}' "results/${VERSION}.json" \
+        | curl "${RESULTS_URL}" --data-binary @-
+fi
+
+# Also send the (truncated) log for diagnostics, as the main benchmark does.
+send_log() {
+    local f="$1" size
+    size=$(stat -c%s "$f" 2>/dev/null || echo 0)
+    if [ "$size" -le 1000000 ]; then
+        curl "${RESULTS_URL}" --data-binary @"$f"
+    else
+        { head -c 100000 "$f"
+          printf '\n...[%d bytes truncated]...\n' "$((size - 1000000))"
+          tail -c 900000 "$f"; } | curl "${RESULTS_URL}" --data-binary @-
+    fi
+}
+send_log log
+send_log /var/log/cloud-init-output.log
+
+shutdown now
