@@ -91,7 +91,7 @@ Like the main ClickBench, each version can be benchmarked on its own fresh VM
 that self-terminates and sends its result to the sink:
 
 ```bash
-./run-benchmark.sh 1.1.54378            # one version on a c6a.4xlarge
+./run-benchmark.sh 1.1.54378            # one version on a c7a.4xlarge
 machine=c6a.metal ./run-benchmark.sh 24.8.1.1
 datasets="hits ssb mgbench taxi" ./run-benchmark.sh 25.1.1.1   # include taxi
 ./run-all-benchmarks.sh                 # one VM per runnable version

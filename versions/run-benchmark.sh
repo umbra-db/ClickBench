@@ -15,7 +15,7 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "${HERE}"
 
 VERSION="${1:?usage: run-benchmark.sh <version>}"
-machine="${machine:=c6a.4xlarge}"
+machine="${machine:=c7a.4xlarge}"
 repo="${repo:=ClickHouse/ClickBench}"
 branch="${branch:=main}"
 datasets="${datasets:=hits ssb mgbench}"   # taxi skipped by default (huge); add 'taxi' to include
