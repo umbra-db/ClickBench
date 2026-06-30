@@ -59,8 +59,14 @@ cleanup() { sudo docker rm -f "${CONTAINER}" >/dev/null 2>&1; }
 # network namespace (`sidecar` mode) — same native protocol, precise --time.
 CLIENT_IMAGE="${IMAGE/-server/-client}"
 CLIENT_MODE=""   # set by start_server: exec | sidecar
-exec_client()    { sudo docker exec -i "${CONTAINER}" clickhouse client "$@"; }
-sidecar_client() { sudo docker run --rm -i --network "container:${CONTAINER}" "${CLIENT_IMAGE}" "$@"; }
+# HOME=/tmp: old images set the clickhouse user's home to /nonexistent, so the
+# client can't write its history file. TZ=UTC + the zoneinfo mount: some old
+# client images ship no tzdata and otherwise fail at startup with "Could not
+# determine local time zone" (before any query runs).
+exec_client()    { sudo docker exec -i -e HOME=/tmp -e TZ=UTC "${CONTAINER}" clickhouse client "$@"; }
+sidecar_client() { sudo docker run --rm -i -e HOME=/tmp -e TZ=UTC \
+                       -v /usr/share/zoneinfo:/usr/share/zoneinfo:ro \
+                       --network "container:${CONTAINER}" "${CLIENT_IMAGE}" "$@"; }
 client() {
     case "${CLIENT_MODE}" in
         sidecar) sidecar_client "$@" ;;
@@ -113,25 +119,36 @@ start_server() {
 # Load every dataset; tables that fail to create/load are left absent so their
 # queries report null.
 load_data() {
-    local ds pair table file
+    local ds pair table file ddl t0
     for ds in ${LOAD_DATASETS}; do
         for pair in ${TABLES[$ds]}; do
             table="${pair%%:*}"; file="${pair##*:}"
-            [ -f "${DATA}/${file}" ] || { echo "missing ${file}, skipping ${table}" >&2; continue; }
-            "${HERE}/create/create.sh" "${VERSION}" "${table}" \
-                | client --multiquery >/dev/null 2>&1 \
-                || { echo "create ${table} failed on ${VERSION}" >&2; continue; }
+            [ -f "${DATA}/${file}" ] || { echo "SKIP ${table}: ${file} not present"; continue; }
+            ddl="$("${HERE}/create/create.sh" "${VERSION}" "${table}")"
+            echo "=== CREATE ${table} on ${VERSION} ==="
+            echo "${ddl}"
+            if ! printf '%s' "${ddl}" | client --multiquery; then
+                echo "CREATE ${table} FAILED on ${VERSION}"; continue
+            fi
+            echo "=== INSERT INTO ${table} FORMAT Native  <-  ${file} ($(du -h "${DATA}/${file}" | cut -f1)) ==="
             # Decompress on the host and stream plain Native into the client, so
             # the (possibly ancient) clickhouse-client never sees compression.
-            zstd -dc "${DATA}/${file}" | client --query "INSERT INTO ${table} FORMAT Native" >/dev/null 2>&1 \
-                || echo "load ${table} failed on ${VERSION}" >&2
+            t0=${SECONDS}
+            if zstd -dc "${DATA}/${file}" | client --query "INSERT INTO ${table} FORMAT Native"; then
+                echo "loaded ${table}: $(client --query "SELECT count() FROM ${table}" 2>/dev/null) rows in $((SECONDS - t0))s"
+            else
+                echo "LOAD ${table} FAILED on ${VERSION}"
+            fi
         done
     done
 }
 
 drop_caches() { sync; echo 3 | sudo tee /proc/sys/vm/drop_caches >/dev/null 2>&1; }
 
-server_alive() { client --query "SELECT 1" >/dev/null 2>&1; }
+# </dev/null: the client runs via `docker {exec,run} -i`, which would otherwise
+# read the caller's stdin — and the benchmark loop reads its query file on
+# stdin, so a bare probe here would swallow the remaining queries.
+server_alive() { client --query "SELECT 1" </dev/null >/dev/null 2>&1; }
 
 # Bring the server back after a crash. An OOM kill takes down clickhouse-server
 # (PID 1 for image providers), so the container exits — but its data layer
@@ -197,14 +214,16 @@ run_benchmark() {
         echo '    "result":'
         echo '    ['
         for ds in ${QUERY_ORDER}; do
-            while IFS= read -r query; do
+            # Read queries on FD 3 (not stdin) so the per-query `docker exec/run -i`
+            # client calls can't consume the query file.
+            while IFS= read -r query <&3; do
                 [ -z "${query}" ] && continue
                 query="${query%;}"                       # strip trailing semicolon
                 drop_caches
                 [ "${FIRST}" = 0 ] && echo ','
                 FIRST=0
                 printf '%s' "$(run_query "${query}")"
-            done < "${HERE}/queries/${ds}.sql"
+            done 3< "${HERE}/queries/${ds}.sql"
         done
         echo
         echo '    ]'
