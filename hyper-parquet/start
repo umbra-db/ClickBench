@@ -3,14 +3,6 @@
 # descriptor to server.endpoint. Every ./query invocation then connects to
 # this single persistent process instead of spawning its own.
 #
-# This is the fix for issue #936: the per-query benchmark driver calls
-# ./query once per try (BENCH_TRIES), keeping a daemon-backed server warm so
-# tries 2..N are genuinely hot. The previous Hyper ./query opened a brand-new
-# HyperProcess on every call, so each "hot" try paid the full cold cost (fresh
-# server, re-parsed parquet metadata, cold OS page cache). With a persistent
-# server those caches stay warm across tries, and the driver's cold cycle
-# (stop -> drop_caches -> start) still gives an honest cold try 1.
-#
 # Unlike hyper/, there is no hits.hyper to keep attached: the data is external
 # parquet read through the OS page cache (which the driver preserves between
 # tries), and the temp external table is connection-scoped so each ./query
