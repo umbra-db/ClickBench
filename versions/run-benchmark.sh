@@ -21,7 +21,7 @@ branch="${branch:=main}"
 datasets="${datasets:=hits ssb mgbench tpch tpcds coffeeshop ontime uk job taxi}"   # each loads into its own database
 tries="${tries:=6}"   # 1 cold + 5 hot runs
 timeout="${timeout:-18000}"                 # load + (optional source build) + queries
-volume="${volume:-500}"                     # GB; ample for all datasets (all now < 10 GB compressed)
+volume="${volume:-1000}"                    # GB; headroom for loading all datasets in parallel (peak usage is higher than the on-disk total)
 # gp3 root volume with provisioned throughput/IOPS (cold-cache query reads and
 # the ingest are disk-bound). gp3 maxes at 1000 MB/s / 16000 IOPS per volume;
 # the instance's own EBS bandwidth is the real ceiling.

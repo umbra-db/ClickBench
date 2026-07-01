@@ -36,6 +36,15 @@ sed -i 's/INCLUDE(add.test.cmake)//' CMakeLists.txt || true
 #    open-sourced (appears in the 2016-06+ trees). --
 find /src -name CMakeLists.txt | xargs -r sed -i '/add_subdirectory *( *private *)/d'
 
+# -- drop the utils/ subdirectory: standalone tools we don't need, some of which
+#    reference sources absent in older snapshots (a fatal configure error). --
+sed -i '/add_subdirectory *( *utils *)/d' CMakeLists.txt || true
+
+# -- Old libstdc++ ABI: this era used the refcounted (COW) std::string (8 bytes),
+#    which the code's sizing assumes (e.g. Field's DBMS_TOTAL_FIELD_SIZE=32).
+#    Build with _GLIBCXX_USE_CXX11_ABI=0 to get that string back (see the CXX
+#    flags injection below), rather than resizing structs for the new 32-byte ABI. --
+
 # -- glob the two small libraries so renamed sources are still picked up --
 cat > libs/libdaemon/CMakeLists.txt <<'EOF'
 file(GLOB daemon_src src/*.cpp)
@@ -44,24 +53,42 @@ target_link_libraries(daemon dbms)
 EOF
 
 python3 - <<'PY'
-import re, os
-# libcommon: replace the explicit source list with a glob
-f = "libs/libcommon/CMakeLists.txt"; s = open(f).read()
+import re, os, glob
+# CMakeLists in this era carry UTF-8 (Russian) comments; the container's Python
+# may default to ASCII, so read/write with an explicit codec that round-trips
+# arbitrary bytes.
+def rd(p): return open(p, encoding="utf-8", errors="surrogateescape").read()
+def wr(p, s): open(p, "w", encoding="utf-8", errors="surrogateescape").write(s)
+
+# libcommon: replace the explicit source list with a glob (handles renames like
+# Revision.cpp -> ClickHouseRevision.cpp where the target has a file the donor
+# build files don't list).
+f = "libs/libcommon/CMakeLists.txt"; s = rd(f)
 s = re.sub(r"add_library\s*\(\s*common.*?\)",
            "file(GLOB common_src src/*.cpp)\nadd_library(common ${common_src})",
            s, count=1, flags=re.S)
-open(f, "w").write(s)
+wr(f, s)
 
-# dbms top-level add_library lists many headers/sources; drop any that this
-# snapshot doesn't have, and drop the (unvendored) mongoclient link name.
-f = "dbms/CMakeLists.txt"; s = open(f).read()
-m = re.search(r"add_library\s*\(\s*dbms(.*?)\)", s, flags=re.S)
-if m:
-    kept = [t for t in m.group(1).split()
-            if not t.endswith((".h", ".cpp", ".inc")) or os.path.exists("dbms/" + t)]
-    s = s[:m.start()] + "add_library (dbms\n\t" + "\n\t".join(kept) + ")" + s[m.end():]
-s = re.sub(r"\bmongoclient\b", "", s)
-open(f, "w").write(s)
+# Drop the (never-vendored) mongoclient link name wherever it appears.
+f = "dbms/CMakeLists.txt"; wr(f, re.sub(r"\bmongoclient\b", "", rd(f)))
+
+# Generic prune: the donor build files (2016-03) list sources that an *older*
+# target snapshot doesn't have yet (files added later). For every add_library /
+# add_executable in every CMakeLists, drop any listed source file that doesn't
+# exist relative to that CMakeLists's directory — otherwise cmake configure
+# fails with "Cannot find source file".
+SRC_RE = re.compile(r".+\.(cpp|cc|cxx|c|h|hpp|inc)$", re.I)
+def prune(cml):
+    d = os.path.dirname(cml); s = rd(cml)
+    def fix(m):
+        head, body = m.group(1), m.group(2)
+        kept = [t for t in body.split()
+                if not SRC_RE.match(t) or os.path.exists(os.path.join(d, t))]
+        return head + " " + " ".join(kept) + ")"
+    s2 = re.sub(r"(add_(?:library|executable)\s*\(\s*[^\s)]+)(.*?)\)", fix, s, flags=re.S|re.I)
+    if s2 != s: wr(cml, s2)
+for cml in glob.glob("**/CMakeLists.txt", recursive=True):
+    prune(cml)
 PY
 
 # -- QuickLZ compile/link stub (dead code path: our data is LZ4/ZSTD) --
@@ -81,6 +108,31 @@ inline size_t qlz_decompress(const char *, void *, qlz_state_decompress *) { ret
 EOF
 cp contrib/quicklz-stub/quicklz/quicklz_level1.h contrib/quicklz-stub/quicklz/quicklz_level2.h
 cp contrib/quicklz-stub/quicklz/quicklz_level1.h contrib/quicklz-stub/quicklz/quicklz_level3.h
+
+# -- vendor Poco/Ext/ScopedTry.h: a Poco extension (scoped try-lock) the early
+#    trees use but that isn't in the donor's Poco. Placed on Poco's include path. --
+mkdir -p contrib/libpoco/Foundation/include/Poco/Ext
+cat > contrib/libpoco/Foundation/include/Poco/Ext/ScopedTry.h <<'EOF'
+#pragma once
+// Scoped try-lock (default-construct, then lock(&mutex) attempts tryLock and
+// returns success; the mutex is released on scope exit if held). Reconstructed
+// to match the early-ClickHouse usage in MergeTreeData::grabOldParts.
+namespace Poco
+{
+template <class M>
+class ScopedTry
+{
+public:
+    ScopedTry() : _mutex(0) {}
+    ~ScopedTry() { if (_mutex) _mutex->unlock(); }
+    bool lock(M * mutex) { if (mutex->tryLock()) { _mutex = mutex; return true; } return false; }
+private:
+    M * _mutex;
+    ScopedTry(const ScopedTry &);
+    ScopedTry & operator=(const ScopedTry &);
+};
+}
+EOF
 
 # -- generate the re2_st (single-threaded re2) headers into a stable include dir --
 mkdir -p contrib/re2_st_gen
@@ -136,6 +188,6 @@ EOF
 #    -fpermissive plus the force-included cmath shim (anchored on the donor's
 #    stable libcityhash include line / -std=gnu++1y flag) --
 sed -i 's#include_directories (${METRICA_SOURCE_DIR}/contrib/libcityhash/)#include_directories (${METRICA_SOURCE_DIR}/contrib/quicklz-stub/)\ninclude_directories (${METRICA_SOURCE_DIR}/contrib/re2_st_gen/)\ninclude_directories (${METRICA_SOURCE_DIR}/contrib/libcityhash/)#' CMakeLists.txt
-sed -i 's#-std=gnu++1y#-std=gnu++1y -fpermissive -include ${METRICA_SOURCE_DIR}/contrib/compat/cmath_compat.h#' CMakeLists.txt
+sed -i 's#-std=gnu++1y#-std=gnu++1y -fpermissive -D_GLIBCXX_USE_CXX11_ABI=0 -include ${METRICA_SOURCE_DIR}/contrib/compat/cmath_compat.h#' CMakeLists.txt
 
 echo "reconstruct.sh: build system reconciled"
