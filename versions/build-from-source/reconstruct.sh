@@ -624,6 +624,83 @@ fi
 SSO=dbms/include/DB/Common/HyperLogLogWithSmallSetOptimization.h
 [ -f "$SSO" ] && sed -i 's#HyperLogLogCounter<K, Hash, DenominatorType>#HyperLogLogCounter<K, Hash, UInt32, DenominatorType>#' "$SSO"
 
+# -- DateLUT API migration (pre-2015-08): the monolithic calendar class DateLUT was
+#    split into DateLUT (a singleton whose instance() returns `const DateLUTImpl &`)
+#    and DateLUTImpl (the calendar, carrying the `Values` struct). The donor supplies
+#    that split (and its DateLUT.cpp/DateLUTImpl.cpp overwrite the era's old ones), so
+#    migrate the era's consumers exactly as 2015-08 did:
+#      * `DateLUT & x = DateLUT::instance(...)`  ->  `const auto & x = DateLUT::instance(...)`
+#        (the returned reference is now `const DateLUTImpl &`), and
+#      * `DateLUT::Values`                       ->  `DateLUTImpl::Values`.
+#    `DateLUT::instance().<method>()` already works (it returns a DateLUTImpl). A no-op
+#    on trees already migrated (2015-08+), which have neither pattern. --
+python3 - <<'PYEOF'
+import os, re
+# `DateLUT & x = DateLUT::instance(...)` -> `const auto & x = ...` (the reference is
+# now const, so `const auto &` is required; a bare `DateLUTImpl &` would fail const).
+ref = re.compile(r'(?:const\s+)?DateLUT\s*&\s*([A-Za-z_]\w*)\s*=\s*DateLUT::instance\(([^)]*)\)')
+for base in ('dbms', 'libs'):
+    for root, _dirs, files in os.walk(base):
+        for fn in files:
+            if not fn.endswith(('.h', '.hpp', '.cpp', '.inl')):
+                continue
+            if fn.startswith('DateLUT'):          # don't rewrite the headers that DEFINE the classes
+                continue
+            p = os.path.join(root, fn)
+            try:
+                with open(p, encoding='utf-8', errors='surrogateescape') as f:
+                    s = f.read()
+            except OSError:
+                continue
+            if 'DateLUT' not in s:
+                continue
+            ns = ref.sub(r'const auto & \1 = DateLUT::instance(\2)', s)
+            ns = ns.replace('DateLUT::Values', 'DateLUTImpl::Values')
+            # Any remaining reference/pointer to `DateLUT` (e.g. a `DateLUT &` function
+            # parameter carrying the calendar) is really the DateLUTImpl now — and it is
+            # read-only, since DateLUT::instance() returns `const DateLUTImpl &`, so make
+            # the target const (a non-const ref won't bind the const instance). Do the
+            # already-const forms first so we never produce `const const`. `DateLUT::`
+            # (instance()/statics) and `Singleton<DateLUT>` have no ` &`/`*` and are left
+            # alone.
+            ns = ns.replace('const DateLUT &', 'const DateLUTImpl &').replace('DateLUT &', 'const DateLUTImpl &')
+            ns = ns.replace('const DateLUT&', 'const DateLUTImpl&').replace('DateLUT&', 'const DateLUTImpl&')
+            ns = ns.replace('const DateLUT *', 'const DateLUTImpl *').replace('DateLUT *', 'const DateLUTImpl *')
+            ns = ns.replace('const DateLUT*', 'const DateLUTImpl*').replace('DateLUT*', 'const DateLUTImpl*')
+            if ns != s:
+                with open(p, 'w', encoding='utf-8', errors='surrogateescape') as f:
+                    f.write(ns)
+PYEOF
+
+# -- assertChar: the back-ported Embedded dictionaries (RegionsHierarchy/RegionsNames)
+#    call DB::assertChar, a ReadHelpers function added after 2015-07. Add it inline in
+#    terms of the era's existing assertString (no new .cpp / error code) when absent. --
+RH=dbms/include/DB/IO/ReadHelpers.h
+if [ -f "$RH" ] && ! grep -q 'assertChar' "$RH"; then
+    python3 - "$RH" <<'PYEOF'
+import sys
+p = sys.argv[1]
+s = open(p, encoding='utf-8', errors='surrogateescape').read()
+anchor = 'void assertString(const char * s, ReadBuffer & buf);'
+if anchor in s:
+    i = s.index(anchor) + len(anchor)
+    add = ('\n\n/// Added by reconstruct.sh: assertChar (used by the back-ported Embedded'
+           '\n/// dictionaries); implemented via the era\'s existing assertString.'
+           '\ninline void assertChar(char symbol, ReadBuffer & buf)'
+           '\n{\n\tconst char s[2] = { symbol, 0 };\n\tassertString(s, buf);\n}')
+    open(p, 'w', encoding='utf-8', errors='surrogateescape').write(s[:i] + add + s[i:])
+PYEOF
+fi
+
+# -- ColumnWithNameAndType -> ColumnWithTypeAndName: the struct was renamed after
+#    2015-07. The back-ported SummingSorted uses the new name; add a compat alias so
+#    it resolves against the era's old type. Guarded on the old header existing and
+#    the new one not, so it's a no-op once the rename landed (2015-08+). --
+CWN=dbms/include/DB/Core/ColumnWithNameAndType.h
+if [ -f "$CWN" ] && [ ! -f dbms/include/DB/Core/ColumnWithTypeAndName.h ]; then
+    printf '\nnamespace DB { using ColumnWithTypeAndName = ColumnWithNameAndType; }\n' >> "$CWN"
+fi
+
 # -- root CMakeLists: add the quicklz/re2_st include dirs and, on the C++ flags,
 #    -fpermissive plus the force-included cmath shim (anchored on the donor's
 #    stable libcityhash include line / -std=gnu++1y flag) --
