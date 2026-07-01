@@ -40,6 +40,14 @@ ENV CC=gcc-${GCC} CXX=g++-${GCC}
 # DONOR: the earliest self-contained snapshot (2016-03-01), whose build system
 # and contrib/ we transplant. TAG: the target snapshot's commit SHA.
 ARG DONOR=5360c78806e043d0d2bf3de15a363f87fbdaf5f4
+# PATCH_REF: the last cleanly-building month (2015-12). A handful of files in the
+# older trees use C++14 that this era's gcc-5 accepted but a modern gcc-5 rejects
+# (recursive generic lambdas etc.); by 2015-12 they had been rewritten. We overlay
+# those specific files from PATCH_REF ("an equivalent from a slightly newer
+# version"). PATCH_FILES is the space-separated allowlist, extended as new
+# gcc-hostile files surface while sweeping backwards.
+ARG PATCH_REF=a7387d9ce431a1f288d1a4898fa0c0c36c765abc
+ARG PATCH_FILES="dbms/include/DB/DataStreams/SummingSortedBlockInputStream.h dbms/src/DataStreams/SummingSortedBlockInputStream.cpp dbms/include/DB/AggregateFunctions/UniquesHashSet.h dbms/include/DB/AggregateFunctions/ReservoirSampler.h dbms/include/DB/AggregateFunctions/ReservoirSamplerDeterministic.h"
 ARG TAG
 RUN git init -q /src && cd /src \
  && git config advice.detachedHead false \
@@ -49,7 +57,12 @@ RUN git init -q /src && cd /src \
  && git checkout FETCH_HEAD -- contrib \
  && git checkout FETCH_HEAD -- $(git ls-tree -r --name-only FETCH_HEAD | grep -E 'CMakeLists.txt$|\.cmake$') \
  && (git checkout FETCH_HEAD -- dbms/include/DB/Dictionaries/Embedded 2>/dev/null || true) \
- && (git checkout FETCH_HEAD -- libs/libdaemon 2>/dev/null || true)
+ && (git checkout FETCH_HEAD -- libs/libdaemon 2>/dev/null || true) \
+ && (git checkout FETCH_HEAD -- libs/libcommon 2>/dev/null || true) \
+ && if [ "${PATCH_REF}" != "${TAG}" ] && [ -n "${PATCH_FILES}" ]; then \
+        git fetch -q --depth 1 origin "${PATCH_REF}" \
+     && for f in ${PATCH_FILES}; do (git checkout FETCH_HEAD -- "$f" 2>/dev/null || true); done; \
+    fi
 
 # Reconcile the donor build system with the older source (globs, stubs, shims).
 COPY reconstruct.sh /reconstruct.sh

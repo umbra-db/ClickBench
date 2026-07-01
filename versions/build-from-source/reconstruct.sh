@@ -166,10 +166,19 @@ EOF
 #    to BaseDaemon with a typedef for the old class name; Interests.h — legacy
 #    OLAP interest categories, unused by the benchmark — is an empty stub). --
 mkdir -p contrib/statdaemons-compat/statdaemons
-for h in RegionsHierarchies RegionsHierarchy RegionsNames TechDataHierarchy; do
-    [ -f "dbms/include/DB/Dictionaries/Embedded/${h}.h" ] && \
-        echo "#pragma once
-#include <DB/Dictionaries/Embedded/${h}.h>" > "contrib/statdaemons-compat/statdaemons/${h}.h"
+# Auto-map every donor header of the same basename to the old <statdaemons/X.h>
+# path: the statdaemons library's contents were dispersed into DB/Common/,
+# common/ and DB/Dictionaries/Embedded/ (e.g. Exception.h -> DB/Common/Exception.h,
+# RegionsHierarchies.h -> Embedded/). First match wins (DB/Common preferred).
+# (DB/Core is scanned last so the newer DB/Common location wins when both exist:
+#  in the oldest trees Exception.h/etc. still lived under DB/Core, not DB/Common.)
+for pair in "dbms/include/DB/Common:DB/Common" "libs/libcommon/include/common:common" "dbms/include/DB/Dictionaries/Embedded:DB/Dictionaries/Embedded" "dbms/include/DB/Core:DB/Core"; do
+    dir="${pair%%:*}"; inc="${pair##*:}"; [ -d "$dir" ] || continue
+    for h in "$dir"/*.h; do
+        [ -f "$h" ] || continue; base="$(basename "$h")"
+        w="contrib/statdaemons-compat/statdaemons/${base}"
+        [ -e "$w" ] || printf '#pragma once\n#include <%s/%s>\n' "$inc" "$base" > "$w"
+    done
 done
 if [ -f libs/libdaemon/include/daemon/BaseDaemon.h ]; then
     printf '#pragma once\n#include <daemon/BaseDaemon.h>\ntypedef BaseDaemon Daemon;\n' \
@@ -237,6 +246,86 @@ EOF
 fi
 echo '#pragma once' > contrib/statdaemons-compat/statdaemons/Interests.h
 
+# -- Yandex/ -> common/: the old include prefix for the common utilities that the
+#    donor renamed to common/ (e.g. <Yandex/Common.h> == <common/Common.h>).
+#    Expose the donor's common headers under the old Yandex/ prefix. --
+if [ -d libs/libcommon/include/common ]; then
+    mkdir -p contrib/yandex-compat
+    ln -sfn "$(pwd)/libs/libcommon/include/common" contrib/yandex-compat/Yandex
+fi
+
+# -- double-conversion: the old code includes <src/double-conversion.h>; the
+#    donor's header is double-conversion/double-conversion.h (same namespace). --
+if [ -f contrib/libdouble-conversion/double-conversion/double-conversion.h ]; then
+    mkdir -p contrib/dc-compat/src
+    printf '#pragma once\n#include <double-conversion/double-conversion.h>\n' > contrib/dc-compat/src/double-conversion.h
+fi
+
+# -- stats/*: the pre-2015-12 trees include several headers from an external Yandex
+#    "stats" library that was never open-sourced. At the 2015-11 -> 2015-12 boundary
+#    these were inlined into the repo (a coordinated refactor). We reproduce that:
+#      * stats/IntHash.h   -> the templated intHash32<salt>+IntHash32 functor, which
+#        2015-12 moved into DB/Common/HashTable/Hash.h. Append them to the era's
+#        own Hash.h (which lacks intHash32) so they are visible everywhere Hash.h is
+#        included -- notably the overlaid UniquesHashSet -- and forward the old
+#        <stats/IntHash.h> path there. (Appending, not a separate compat definition,
+#        avoids a double-definition when both headers land in one TU.)
+#      * stats/{UniquesHashSet,ReservoirSampler,ReservoirSamplerDeterministic}.h ->
+#        the algorithms, overlaid in-tree from PATCH_REF and forwarded. --
+mkdir -p contrib/stats-compat/stats
+HASH_H=dbms/include/DB/Common/HashTable/Hash.h
+# (Match the definition `intHash32(` -- not the prose comment that mentions the
+#  name -- so we don't skip the append on a false positive.)
+if [ -f "$HASH_H" ] && ! grep -q 'intHash32(' "$HASH_H"; then
+    cat >> "$HASH_H" <<'EOF'
+
+/// Added by reconstruct.sh: the templated salted UInt64 -> UInt32 hash (ttwang) and
+/// its container functor. Before 2015-12 these lived in the external <stats/IntHash.h>;
+/// 2015-12 moved them into this header. Kept identical to the 2015-12 definition.
+template <DB::UInt64 salt>
+inline DB::UInt32 intHash32(DB::UInt64 key)
+{
+	key ^= salt;
+	key = (~key) + (key << 18);
+	key = key ^ ((key >> 31) | (key << 33));
+	key = key * 21;
+	key = key ^ ((key >> 11) | (key << 53));
+	key = key + (key << 6);
+	key = key ^ ((key >> 22) | (key << 42));
+	return key;
+}
+
+template <typename T, DB::UInt64 salt = 0>
+struct IntHash32
+{
+	size_t operator() (const T & key) const { return intHash32<salt>(key); }
+};
+EOF
+fi
+printf '#pragma once\n#include <DB/Common/HashTable/Hash.h>\n' > contrib/stats-compat/stats/IntHash.h
+
+# The overlaid 2015-12 ReservoirSampler{,Deterministic}.h back a small sample buffer
+# with DB::PODArray<T, N, AllocatorWithStackMemory<Allocator<false>, N>> -- but
+# 2015-11's Allocator is a non-template class and lacks AllocatorWithStackMemory, and
+# back-porting the templated allocator would ripple through every container. The
+# buffer only ever needs push_back / [] / size / resize / begin / end / clear / swap,
+# so retarget it to std::vector (the first PODArray template arg is the element type).
+# quantile() is unused by the benchmark, so exact reservoir behaviour is immaterial.
+for f in dbms/include/DB/AggregateFunctions/ReservoirSampler.h \
+         dbms/include/DB/AggregateFunctions/ReservoirSamplerDeterministic.h; do
+    [ -f "$f" ] || continue
+    sed -i 's#include <DB/Common/PODArray.h>#include <vector>#' "$f"
+    sed -i 's#using Array = DB::PODArray<\([^,]*\),[^;]*>;#using Array = std::vector<\1>;#' "$f"
+done
+
+# Forward the old <stats/...> algorithm paths to the overlaid in-tree headers.
+for base in ReservoirSampler ReservoirSamplerDeterministic UniquesHashSet; do
+    if [ -f "dbms/include/DB/AggregateFunctions/${base}.h" ]; then
+        printf '#pragma once\n#include <DB/AggregateFunctions/%s.h>\n' "$base" \
+            > "contrib/stats-compat/stats/${base}.h"
+    fi
+done
+
 # -- generate the re2_st (single-threaded re2) headers into a stable include dir --
 mkdir -p contrib/re2_st_gen
 ( cd contrib/re2_st_gen && sh /src/contrib/libre2/create_st_headers.sh /src/contrib/libre2 . )
@@ -267,21 +356,61 @@ public:
     MongoDBDictionarySource(const DictionaryStructure &, const Poco::Util::AbstractConfiguration &,
         const std::string &, Block &, Context &)
     { throw Exception("MongoDB dictionary source is not supported in this build", 0); }
-    BlockInputStreamPtr loadAll() override { throw Exception("MongoDB not supported", 0); }
-    bool supportsSelectiveLoad() const override { return false; }
-    BlockInputStreamPtr loadIds(const std::vector<std::uint64_t> &) override { throw Exception("MongoDB not supported", 0); }
-    BlockInputStreamPtr loadKeys(const ConstColumnPlainPtrs &, const std::vector<std::size_t> &) override { throw Exception("MongoDB not supported", 0); }
-    bool isModified() const override { return false; }
-    DictionarySourcePtr clone() const override { throw Exception("MongoDB not supported", 0); }
-    std::string toString() const override { return "MongoDB(disabled)"; }
+    // No `override` on these: the exact IDictionarySource virtuals vary across the
+    // era (e.g. loadKeys did not exist before ~2015-12). Omitting the keyword makes
+    // each an implicit override where the matching virtual exists and a harmless
+    // extra method where it doesn't, so the stub is concrete for every snapshot.
+    BlockInputStreamPtr loadAll() { throw Exception("MongoDB not supported", 0); }
+    bool supportsSelectiveLoad() const { return false; }
+    BlockInputStreamPtr loadIds(const std::vector<std::uint64_t> &) { throw Exception("MongoDB not supported", 0); }
+    BlockInputStreamPtr loadKeys(const ConstColumnPlainPtrs &, const std::vector<std::size_t> &) { throw Exception("MongoDB not supported", 0); }
+    bool isModified() const { return false; }
+    DictionarySourcePtr clone() const { throw Exception("MongoDB not supported", 0); }
+    std::string toString() const { return "MongoDB(disabled)"; }
 };
 }
 EOF
 
+# -- member-template virt-specifiers: the early trees mark templated member
+#    functions with `override`/`final` (e.g. `template <typename T> bool
+#    execute(...) override` in FunctionsMiscellaneous.h). A member template can
+#    never be virtual, so this is ill-formed; the era's compiler accepted it but
+#    gcc-5 rejects it ("member template ... may not have virt-specifiers"). Strip
+#    the trailing specifier from any method whose immediately-preceding non-blank
+#    line opens a `template<...>` declaration. --
+python3 - <<'PYEOF'
+import os, re
+# ") ... override|final" at end of a declaration line (body brace on next line)
+spec = re.compile(r'\)\s*(?:const\s*)?(?:override|final)(?:\s+(?:override|final))?\s*$')
+tmpl = re.compile(r'^\s*template\s*<')
+for root, _dirs, files in os.walk('dbms'):
+    for fn in files:
+        if not fn.endswith(('.h', '.hpp', '.cpp')):
+            continue
+        p = os.path.join(root, fn)
+        try:
+            with open(p, encoding='utf-8', errors='surrogateescape') as f:
+                lines = f.readlines()
+        except OSError:
+            continue
+        changed = False
+        prev_nonblank = ''
+        for i, ln in enumerate(lines):
+            if spec.search(ln) and tmpl.match(prev_nonblank):
+                # drop just the virt-specifier keyword(s), keep the rest verbatim
+                lines[i] = re.sub(r'\s*(?:override|final)(?:\s+(?:override|final))?\s*$', '\n', ln)
+                changed = True
+            if ln.strip():
+                prev_nonblank = ln
+        if changed:
+            with open(p, 'w', encoding='utf-8', errors='surrogateescape') as f:
+                f.writelines(lines)
+PYEOF
+
 # -- root CMakeLists: add the quicklz/re2_st include dirs and, on the C++ flags,
 #    -fpermissive plus the force-included cmath shim (anchored on the donor's
 #    stable libcityhash include line / -std=gnu++1y flag) --
-sed -i 's#include_directories (${METRICA_SOURCE_DIR}/contrib/libcityhash/)#include_directories (${METRICA_SOURCE_DIR}/contrib/quicklz-stub/)\ninclude_directories (${METRICA_SOURCE_DIR}/contrib/re2_st_gen/)\ninclude_directories (${METRICA_SOURCE_DIR}/contrib/statdaemons-compat/)\ninclude_directories (${METRICA_SOURCE_DIR}/contrib/libcityhash/)#' CMakeLists.txt
+sed -i 's#include_directories (${METRICA_SOURCE_DIR}/contrib/libcityhash/)#include_directories (${METRICA_SOURCE_DIR}/contrib/quicklz-stub/)\ninclude_directories (${METRICA_SOURCE_DIR}/contrib/re2_st_gen/)\ninclude_directories (${METRICA_SOURCE_DIR}/contrib/statdaemons-compat/)\ninclude_directories (${METRICA_SOURCE_DIR}/contrib/yandex-compat/)\ninclude_directories (${METRICA_SOURCE_DIR}/contrib/dc-compat/)\ninclude_directories (${METRICA_SOURCE_DIR}/contrib/stats-compat/)\ninclude_directories (${METRICA_SOURCE_DIR}/contrib/libcityhash/)#' CMakeLists.txt
 # Force-include a few standard headers: on this (trusty) toolchain they aren't
 # pulled in transitively the way the newer 16.04/boost-1.58 headers were, so code
 # that assumes std::accumulate (<numeric>) / std::mt19937 (<random>) is in scope
