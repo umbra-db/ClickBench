@@ -30,18 +30,21 @@ DATADIR=prepare-data/data
 mkdir -p "${DATADIR}"
 BUCKET='https://clickhouse-public-datasets.s3.amazonaws.com/versions-benchmark'
 
-# Download only the files for the datasets we will load; -f so a missing file
-# (e.g. ssb/taxi not uploaded yet) is skipped and run-version.sh reports its
-# queries as null rather than failing.
-fetch() { wget --continue --progress=dot:giga -P "${DATADIR}" "${BUCKET}/$1" || echo "skip $1 (not in bucket)"; }
+# Download the files for the datasets we will load, in parallel. A missing file
+# (e.g. ssb/taxi not uploaded yet) just fails its own wget and is skipped, so
+# run-version.sh reports that dataset's queries as null rather than failing.
+FILES=""
 for ds in ${DATASETS}; do
     case "${ds}" in
-        hits)    fetch hits.native.zst ;;
-        ssb)     fetch ssb.native.zst ;;
-        mgbench) fetch mgbench1.native.zst; fetch mgbench2.native.zst; fetch mgbench3.native.zst ;;
-        taxi)    fetch taxi.native.zst ;;
+        hits)    FILES="${FILES} hits.native.zst" ;;
+        ssb)     FILES="${FILES} ssb.native.zst" ;;
+        mgbench) FILES="${FILES} mgbench1.native.zst mgbench2.native.zst mgbench3.native.zst" ;;
+        taxi)    FILES="${FILES} taxi.native.zst" ;;
     esac
 done
+echo "downloading in parallel:${FILES}"
+echo ${FILES} | tr ' ' '\n' | grep . | \
+    xargs -P 8 -I{} wget --continue --progress=dot:giga -P "${DATADIR}" "${BUCKET}/{}"
 
 # Versions with no published Docker image are built from source on this VM.
 if [[ "${IMAGE}" == clickhouse-built:* ]]; then
