@@ -28,6 +28,29 @@ volume="${volume:-1000}"                    # GB; headroom for loading all datas
 iops="${iops:-16000}"
 throughput="${throughput:-1000}"            # MB/s
 
+# Transient AWS errors that clear on their own: spare capacity frees as instances
+# drain, service quotas free as other benchmarks finish, and API throttling
+# (RequestLimitExceeded / Throttling) clears within seconds. A version sweep fires
+# dozens of launches back-to-back and hits throttling far more than the single-shot
+# main launcher, so we retry those too. aws_retry also guards the pre-launch
+# describe-* calls — a throttled describe would blank arch/ami and make the launch
+# fail with a non-retryable error, silently skipping that version. Genuine config
+# errors (bad AMI, missing IAM perms, malformed user-data) don't match and fail
+# fast, so a broken invocation never loops forever.
+RETRY_RE='InsufficientInstanceCapacity|VcpuLimitExceeded|InstanceLimitExceeded|MaxSpotInstanceCountExceeded|RequestLimitExceeded|Throttling'
+aws_retry() {
+    local out rc
+    while :; do
+        out=$(AWS_PAGER='' "$@" 2>&1) && rc=0 || rc=$?
+        if [ "${rc}" -eq 0 ]; then printf '%s\n' "${out}"; return 0; fi
+        if printf '%s' "${out}" | grep -qE "${RETRY_RE}"; then
+            printf 'aws: %s, retrying in 60s...\n' "$(printf '%s' "${out}" | grep -oE "${RETRY_RE}" | head -n1)" >&2
+            sleep 60; continue
+        fi
+        printf '%s\n' "${out}" >&2; return "${rc}"   # different error — don't loop
+    done
+}
+
 # Resolve the version against list-versions.sh: accept an exact version
 # (26.6.1.1193, 1.1.54378, 53973) or a prefix at a dot boundary, choosing the
 # latest match by version sort (26.6 -> 26.6.1.1193, 24 -> 24.12.x, 1.1 -> the
@@ -50,8 +73,8 @@ if [[ "${image}" == clickhouse-built:* ]]; then
     [ -z "${tag}" ] && { echo "no build recipe for ${VERSION} in versions.txt" >&2; exit 1; }
 fi
 
-arch=$(aws ec2 describe-instance-types --instance-types "$machine" --query 'InstanceTypes[0].ProcessorInfo.SupportedArchitectures' --output text)
-ami=$(aws ec2 describe-images --owners amazon --filters "Name=name,Values=ubuntu/images/hvm-ssd-gp3/ubuntu-noble-24.04*" "Name=architecture,Values=${arch}" "Name=state,Values=available" --query 'sort_by(Images, &CreationDate) | [-1].[ImageId]' --output text)
+arch=$(aws_retry aws ec2 describe-instance-types --instance-types "$machine" --query 'InstanceTypes[0].ProcessorInfo.SupportedArchitectures' --output text)
+ami=$(aws_retry aws ec2 describe-images --owners amazon --filters "Name=name,Values=ubuntu/images/hvm-ssd-gp3/ubuntu-noble-24.04*" "Name=architecture,Values=${arch}" "Name=state,Values=available" --query 'sort_by(Images, &CreationDate) | [-1].[ImageId]' --output text)
 
 awk -v repo="$repo" -v branch="$branch" -v version="$VERSION" -v image="$image" \
     -v tag="$tag" -v gcc="$gcc" -v datasets="$datasets" -v tries="$tries" -v t="$timeout" '
@@ -62,20 +85,9 @@ awk -v repo="$repo" -v branch="$branch" -v version="$VERSION" -v image="$image" 
     print
 }' cloud-init.sh.in > "cloud-init.${VERSION}.sh"
 
-# Retry on transient capacity / quota errors (same shape as the main launcher).
-RETRY_RE='InsufficientInstanceCapacity|VcpuLimitExceeded|InstanceLimitExceeded|MaxSpotInstanceCountExceeded'
-while :; do
-    out=$(AWS_PAGER='' aws ec2 run-instances --image-id "$ami" --instance-type "$machine" \
-        --block-device-mappings "DeviceName=/dev/sda1,Ebs={DeleteOnTermination=true,VolumeSize=${volume},VolumeType=gp3,Iops=${iops},Throughput=${throughput}}" \
-        --instance-initiated-shutdown-behavior terminate \
-        --tag-specifications "ResourceType=instance,Tags=[{Key=Name,Value=clickbench-versions-${VERSION}}]" \
-        --user-data "file://cloud-init.${VERSION}.sh" 2>&1) && rc=0 || rc=$?
-
-    if [ "$rc" -eq 0 ]; then printf '%s\n' "$out"; break; fi
-    reason=$(printf '%s' "$out" | grep -oE "$RETRY_RE" | head -n1)
-    if [ -n "$reason" ]; then
-        printf 'run-instances: %s for %s, retrying in 60s...\n' "$reason" "$machine" >&2
-        sleep 60; continue
-    fi
-    printf '%s\n' "$out" >&2; exit "$rc"
-done
+# Launch the VM, backing off on transient capacity / quota / throttling errors.
+aws_retry aws ec2 run-instances --image-id "$ami" --instance-type "$machine" \
+    --block-device-mappings "DeviceName=/dev/sda1,Ebs={DeleteOnTermination=true,VolumeSize=${volume},VolumeType=gp3,Iops=${iops},Throughput=${throughput}}" \
+    --instance-initiated-shutdown-behavior terminate \
+    --tag-specifications "ResourceType=instance,Tags=[{Key=Name,Value=clickbench-versions-${VERSION}}]" \
+    --user-data "file://cloud-init.${VERSION}.sh"
