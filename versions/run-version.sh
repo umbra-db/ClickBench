@@ -217,10 +217,14 @@ load_data() {
     local ds pids=()
     : > "${LOAD_STATS}"   # fresh per run; per-table load times accumulate here
     for ds in ${LOAD_DATASETS}; do
+        if ! dataset_supported "${ds}"; then
+            echo "=== skipping load of ${ds}: no query supported on ${VERSION} (all below min version) ===" >&2
+            continue
+        fi
         load_one_dataset "${ds}" &
         pids+=("$!")
     done
-    wait "${pids[@]}"
+    [ "${#pids[@]}" -gt 0 ] && wait "${pids[@]}"
     echo "=== all dataset loads finished ==="
 }
 
@@ -326,6 +330,20 @@ null_row() {
     local i out="["
     for i in $(seq 1 "${TRIES}"); do out+="null"; [ "${i}" -ne "${TRIES}" ] && out+=", "; done
     echo "${out}]"
+}
+# Is any query of <dataset> runnable on the current VERSION? Reads the per-query
+# minimum-version annotations (queries/<ds>.minver). Returns success if at least
+# one query is supported ("0" or version >= its minver). When none are, the whole
+# dataset is unsupported on this version, so there is no point loading it — every
+# query would be recorded null anyway (see the skip logic in run_benchmark).
+dataset_supported() {
+    local ds="$1" mvf="${HERE}/queries/${ds}.minver" mv
+    [ -f "${mvf}" ] || return 0   # no annotation -> assume supported
+    while IFS= read -r mv; do
+        [ -z "${mv}" ] && continue
+        { [ "${mv}" = "0" ] || version_ge "${VERSION}" "${mv}"; } && return 0
+    done < "${mvf}"
+    return 1
 }
 
 # Run one query TRIES times, print a JSON array "[t1, ..., tN]" (null on error).

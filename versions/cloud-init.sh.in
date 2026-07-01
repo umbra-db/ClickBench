@@ -14,8 +14,15 @@ export DEBIAN_FRONTEND=noninteractive
 apt-get update -y
 # docker-buildx: run-version.sh builds unpublished (clickhouse-built:*) versions
 # from source with `docker buildx` (the legacy builder hangs on recent engines).
-apt-get install -y docker.io docker-buildx git wget curl jq zstd pv aria2
+# earlyoom: loading all datasets in parallel (and heavy joins on old, less
+# memory-efficient versions) can exhaust RAM; without it the kernel thrashes and
+# the whole VM gets stuck (never terminating, wasting the instance). earlyoom kills
+# the offending process early instead — the server crash is then recovered by
+# run-version.sh's revive_server, or the query is just recorded null. Same as the
+# main ClickBench cloud-init.
+apt-get install -y docker.io docker-buildx git wget curl jq zstd pv aria2 earlyoom
 systemctl enable --now docker
+systemctl enable --now earlyoom
 
 git clone --depth 1 'https://github.com/@repo@.git' --branch '@branch@' ClickBench
 cd ClickBench/versions

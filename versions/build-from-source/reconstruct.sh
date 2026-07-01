@@ -166,6 +166,89 @@ EOF
 #    to BaseDaemon with a typedef for the old class name; Interests.h — legacy
 #    OLAP interest categories, unused by the benchmark — is an empty stub). --
 mkdir -p contrib/statdaemons-compat/statdaemons
+# -- DB::Exception: in the oldest trees (pre ~2015-11) the class itself lived in the
+#    never-public external <statdaemons/Exception.h> -- DB/Core/Exception.h merely
+#    #includes it and adds free functions (throwFromErrno etc.). Later the class was
+#    inlined in-repo (DB/Common/Exception.h). If the tree defines it we let the
+#    auto-map below forward <statdaemons/Exception.h> there; otherwise vendor an
+#    equivalent class (matching what 2015-12 inlined). It is created *before* the
+#    auto-map so the auto-map leaves it untouched. Header-only, so it adds no link
+#    symbols and the era's own Exception.cpp still provides the free functions. The
+#    StackTrace it carries was external in that era too, so stub it (no-op
+#    toString(); stack traces are diagnostic only, never needed by the benchmark). --
+if ! grep -rqlE 'class Exception[[:space:]]*:[[:space:]]*public[[:space:]]+Poco::Exception' dbms/include 2>/dev/null; then
+    cat > contrib/statdaemons-compat/statdaemons/Exception.h <<'EOF'
+#pragma once
+// Vendored DB::Exception + StackTrace for pre-2015-11 trees (both lived in the
+// never-public external statdaemons library). Interface matches the version
+// 2015-12 inlined into DB/Common/Exception.h.
+#include <string>
+#include <cerrno>
+#include <Poco/Exception.h>
+
+/// Stub: real stack capture was in the external lib; only toString() is ever used
+/// (for diagnostics), so an empty trace is sufficient for the benchmark.
+class StackTrace
+{
+public:
+    StackTrace() {}
+    std::string toString() const { return {}; }
+};
+
+namespace DB
+{
+
+class Exception : public Poco::Exception
+{
+public:
+    Exception(int code = 0) : Poco::Exception(code) {}
+    Exception(const std::string & msg, int code = 0) : Poco::Exception(msg, code) {}
+    Exception(const std::string & msg, const std::string & arg, int code = 0) : Poco::Exception(msg, arg, code) {}
+    Exception(const std::string & msg, const Exception & exc, int code = 0) : Poco::Exception(msg, exc, code), trace(exc.trace) {}
+    Exception(const Exception & exc) : Poco::Exception(exc), trace(exc.trace) {}
+    explicit Exception(const Poco::Exception & exc) : Poco::Exception(exc.displayText()) {}
+    ~Exception() throw() {}
+    Exception & operator = (const Exception & exc) { Poco::Exception::operator=(exc); trace = exc.trace; return *this; }
+    const char * name() const throw() { return "DB::Exception"; }
+    const char * className() const throw() { return "DB::Exception"; }
+    DB::Exception * clone() const { return new DB::Exception(*this); }
+    void rethrow() const { throw *this; }
+    void addMessage(const std::string & arg) { extendedMessage(arg); }
+    const StackTrace & getStackTrace() const { return trace; }
+private:
+    StackTrace trace;
+};
+
+/// Carries a saved errno; thrown by throwFromErrno(). (Also external in this era.)
+class ErrnoException : public Exception
+{
+public:
+    ErrnoException(int code = 0, int saved_errno_ = 0) : Exception(code), saved_errno(saved_errno_) {}
+    ErrnoException(const std::string & msg, int code = 0, int saved_errno_ = 0) : Exception(msg, code), saved_errno(saved_errno_) {}
+    ErrnoException(const std::string & msg, const std::string & arg, int code = 0, int saved_errno_ = 0) : Exception(msg, arg, code), saved_errno(saved_errno_) {}
+    ErrnoException(const std::string & msg, const Exception & exc, int code = 0, int saved_errno_ = 0) : Exception(msg, exc, code), saved_errno(saved_errno_) {}
+    ErrnoException(const ErrnoException & exc) : Exception(exc), saved_errno(exc.saved_errno) {}
+    int getErrno() const { return saved_errno; }
+private:
+    int saved_errno;
+};
+
+}
+EOF
+    # Some back-ported (newer) headers, e.g. NetException.h, include
+    # <DB/Common/Exception.h>; in this era Exception lives at DB/Core. Forward the
+    # DB/Common path to it (only when the tree has no real DB/Common/Exception.h).
+    if [ ! -e dbms/include/DB/Common/Exception.h ]; then
+        mkdir -p dbms/include/DB/Common
+        printf '#pragma once\n#include <DB/Core/Exception.h>\n' > dbms/include/DB/Common/Exception.h
+    fi
+fi
+# The back-ported SummingSortedBlockInputStream.h includes <DB/Core/FieldVisitors.h>;
+# before that split the Field visitors (FieldVisitorSum etc.) lived in DB/Core/Field.h.
+# Forward the newer path to Field.h when the split-out header is absent.
+if [ ! -e dbms/include/DB/Core/FieldVisitors.h ] && [ -e dbms/include/DB/Core/Field.h ]; then
+    printf '#pragma once\n#include <DB/Core/Field.h>\n' > dbms/include/DB/Core/FieldVisitors.h
+fi
 # Auto-map every donor header of the same basename to the old <statdaemons/X.h>
 # path: the statdaemons library's contents were dispersed into DB/Common/,
 # common/ and DB/Dictionaries/Embedded/ (e.g. Exception.h -> DB/Common/Exception.h,
@@ -213,12 +296,17 @@ EOF
 #include <memory>
 #include <string>
 #include <ctime>
+#include <thread>
+#include <chrono>
 using Poco::Util::Application;
 class BaseDaemon : public Poco::Util::ServerApplication
 {
 public:
     bool isCancelled() { return is_cancelled; }
     static BaseDaemon & instance() { return dynamic_cast<BaseDaemon &>(Poco::Util::Application::instance()); }
+    // The real daemon's sleep() woke early on shutdown; a plain sleep is fine here
+    // (used only for retry backoff, e.g. mysqlxx connection-pool reconnects).
+    void sleep(double seconds) { std::this_thread::sleep_for(std::chrono::duration<double>(seconds)); }
     template <typename T> void writeToGraphite(const std::string & key, const T & value, time_t timestamp = 0, const std::string & custom_root_path = "") { if (graphite_writer) graphite_writer->write(key, value, timestamp, custom_root_path); }
     template <typename T> void writeToGraphite(const GraphiteWriter::KeyValueVector<T> & key_vals, time_t timestamp = 0, const std::string & custom_root_path = "") { if (graphite_writer) graphite_writer->write(key_vals, timestamp, custom_root_path); }
     GraphiteWriter * getGraphiteWriter() { return graphite_writer.get(); }
@@ -246,12 +334,31 @@ EOF
 fi
 echo '#pragma once' > contrib/statdaemons-compat/statdaemons/Interests.h
 
+# The auto-map above only handles <statdaemons/X.h>; the pre-2015-11 trees also
+# pull <statdaemons/threadpool.hpp> and <statdaemons/ext/*.hpp> (.hpp / a subdir).
+# By PATCH_REF these live in-tree as <common/threadpool.hpp> and <ext/*.hpp>
+# (overlaid); forward the old paths to them.
+[ -f libs/libcommon/include/common/threadpool.hpp ] && \
+    printf '#pragma once\n#include <common/threadpool.hpp>\n' > contrib/statdaemons-compat/statdaemons/threadpool.hpp
+if [ -d libs/libcommon/include/ext ]; then
+    mkdir -p contrib/statdaemons-compat/statdaemons/ext
+    for h in libs/libcommon/include/ext/*.hpp; do
+        [ -f "$h" ] || continue; base="$(basename "$h")"
+        printf '#pragma once\n#include <ext/%s>\n' "$base" > "contrib/statdaemons-compat/statdaemons/ext/${base}"
+    done
+fi
+
 # -- Yandex/ -> common/: the old include prefix for the common utilities that the
 #    donor renamed to common/ (e.g. <Yandex/Common.h> == <common/Common.h>).
 #    Expose the donor's common headers under the old Yandex/ prefix. --
 if [ -d libs/libcommon/include/common ]; then
     mkdir -p contrib/yandex-compat
     ln -sfn "$(pwd)/libs/libcommon/include/common" contrib/yandex-compat/Yandex
+    # Yandex/Revision.h: the tiny public revision header, external in that era. The
+    # in-tree libcommon/src/Revision.cpp defines Revision::get() (reading REVISION
+    # from the generated revision.h); just declare it so the include resolves.
+    [ -e libs/libcommon/include/common/Revision.h ] || \
+        printf '#pragma once\nnamespace Revision { unsigned get(); }\n' > libs/libcommon/include/common/Revision.h
 fi
 
 # -- double-conversion: the old code includes <src/double-conversion.h>; the
@@ -260,6 +367,42 @@ if [ -f contrib/libdouble-conversion/double-conversion/double-conversion.h ]; th
     mkdir -p contrib/dc-compat/src
     printf '#pragma once\n#include <double-conversion/double-conversion.h>\n' > contrib/dc-compat/src/double-conversion.h
 fi
+
+# -- strconvert/escape.h: another never-public Yandex string-escaping header. The
+#    only compiled use is MySQLDictionarySource's escaped_for_like (MySQL external
+#    dictionaries -- never exercised by the benchmark); strconvert::hash appears only
+#    in the OLAP server code, which is excluded from the build. Provide equivalents
+#    (escaped_for_like is identity-safe for compile-only use). --
+mkdir -p contrib/strconvert-compat/strconvert
+cat > contrib/strconvert-compat/strconvert/escape.h <<'EOF'
+#pragma once
+#include <string>
+#include <cstddef>
+namespace strconvert
+{
+    // MySQL external dictionaries are unsupported in this reconstructed build, so
+    // the escaping only needs to compile (this path is never executed).
+    inline std::string escaped_for_like(const std::string & s) { return s; }
+    inline std::size_t hash(const std::string & s) { std::size_t h = 0; for (char c : s) h = h * 131 + static_cast<unsigned char>(c); return h; }
+}
+EOF
+# strconvert/hash64.h: used by the legacy OLAP server code (OLAPAttributesMetadata)
+# to hash attribute names. A deterministic 64-bit hash (FNV-1a) suffices; the OLAP
+# protocol is not exercised by the benchmark.
+cat > contrib/strconvert-compat/strconvert/hash64.h <<'EOF'
+#pragma once
+#include <string>
+#include <cstdint>
+namespace strconvert
+{
+    inline std::uint64_t hash64(const std::string & s)
+    {
+        std::uint64_t h = 14695981039346656037ULL;
+        for (char c : s) { h ^= static_cast<unsigned char>(c); h *= 1099511628211ULL; }
+        return h;
+    }
+}
+EOF
 
 # -- stats/*: the pre-2015-12 trees include several headers from an external Yandex
 #    "stats" library that was never open-sourced. At the 2015-11 -> 2015-12 boundary
@@ -407,10 +550,21 @@ for root, _dirs, files in os.walk('dbms'):
                 f.writelines(lines)
 PYEOF
 
+# -- ConnectionPoolWithFailover: the external (pre-2015-11) PoolWithFailoverBase
+#    exposed a 1-arg virtual getMany(settings); the back-ported base has a 2-arg
+#    getMany(settings, get_all) (non-virtual). Adapt the derived client's override
+#    so it compiles against the newer base. This is distributed-query plumbing the
+#    single-node benchmark never exercises, so only compilation matters. --
+CPF=dbms/include/DB/Client/ConnectionPoolWithFailover.h
+if [ -f "$CPF" ] && grep -q 'getMany(const Settings \* settings = nullptr) override' "$CPF"; then
+    sed -i 's#getMany(const Settings \* settings = nullptr) override#getMany(const Settings * settings = nullptr, bool get_all = false)#' "$CPF"
+    sed -i 's#return Base::getMany(settings);#return Base::getMany(settings, get_all);#' "$CPF"
+fi
+
 # -- root CMakeLists: add the quicklz/re2_st include dirs and, on the C++ flags,
 #    -fpermissive plus the force-included cmath shim (anchored on the donor's
 #    stable libcityhash include line / -std=gnu++1y flag) --
-sed -i 's#include_directories (${METRICA_SOURCE_DIR}/contrib/libcityhash/)#include_directories (${METRICA_SOURCE_DIR}/contrib/quicklz-stub/)\ninclude_directories (${METRICA_SOURCE_DIR}/contrib/re2_st_gen/)\ninclude_directories (${METRICA_SOURCE_DIR}/contrib/statdaemons-compat/)\ninclude_directories (${METRICA_SOURCE_DIR}/contrib/yandex-compat/)\ninclude_directories (${METRICA_SOURCE_DIR}/contrib/dc-compat/)\ninclude_directories (${METRICA_SOURCE_DIR}/contrib/stats-compat/)\ninclude_directories (${METRICA_SOURCE_DIR}/contrib/libcityhash/)#' CMakeLists.txt
+sed -i 's#include_directories (${METRICA_SOURCE_DIR}/contrib/libcityhash/)#include_directories (${METRICA_SOURCE_DIR}/contrib/quicklz-stub/)\ninclude_directories (${METRICA_SOURCE_DIR}/contrib/re2_st_gen/)\ninclude_directories (${METRICA_SOURCE_DIR}/contrib/statdaemons-compat/)\ninclude_directories (${METRICA_SOURCE_DIR}/contrib/yandex-compat/)\ninclude_directories (${METRICA_SOURCE_DIR}/contrib/dc-compat/)\ninclude_directories (${METRICA_SOURCE_DIR}/contrib/stats-compat/)\ninclude_directories (${METRICA_SOURCE_DIR}/contrib/strconvert-compat/)\ninclude_directories (${METRICA_SOURCE_DIR}/contrib/libcityhash/)#' CMakeLists.txt
 # Force-include a few standard headers: on this (trusty) toolchain they aren't
 # pulled in transitively the way the newer 16.04/boost-1.58 headers were, so code
 # that assumes std::accumulate (<numeric>) / std::mt19937 (<random>) is in scope
