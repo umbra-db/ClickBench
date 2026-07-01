@@ -561,6 +561,69 @@ if [ -f "$CPF" ] && grep -q 'getMany(const Settings \* settings = nullptr) overr
     sed -i 's#return Base::getMany(settings);#return Base::getMany(settings, get_all);#' "$CPF"
 fi
 
+# -- ErrorCodes::NO_AVAILABLE_DATA: the back-ported CompactArray/HyperLogLog throw
+#    with this code, added to the enum only after 2015-08. Append it (with a free
+#    number) to the era's enum when absent, so those overlaid headers compile. --
+EC=dbms/include/DB/Core/ErrorCodes.h
+if [ -f "$EC" ] && ! grep -q 'NO_AVAILABLE_DATA' "$EC"; then
+    python3 - "$EC" <<'PYEOF'
+import sys, re
+p = sys.argv[1]
+s = open(p, encoding='utf-8', errors='surrogateescape').read()
+m = re.search(r'enum ErrorCodes\s*\{', s)
+if m:
+    end = s.index('};', m.end())
+    nums = [int(n) for n in re.findall(r'=\s*(\d+)', s[m.end():end])]
+    s = s[:end] + ('\t\tNO_AVAILABLE_DATA = %d,\n\t' % ((max(nums) + 1) if nums else 10000)) + s[end:]
+    open(p, 'w', encoding='utf-8', errors='surrogateescape').write(s)
+PYEOF
+fi
+
+# -- uniq on Float32/Float64 (pre-2015-09): AggregateFunctionUniq{HLL12,Combined}Data
+#    typedef their HyperLogLog / CombinedCardinalityEstimator Set over the raw column
+#    type T, so uniq(Float) instantiates the HLL on `float`. But OneAdder inserts the
+#    *hashed* value (AggregateFunctionUniqTraits<T>::hash -> UInt64), and the
+#    back-ported HLL bit-shifts its value type (can't be float). Add Float32/Float64
+#    data specializations that use a UInt64 Set (exactly as the existing <String>
+#    specialization does) -- the HLL is then only ever built on UInt64, which both
+#    compiles and is correct (2015-09+ restructured the code the same way). --
+AFU=dbms/include/DB/AggregateFunctions/AggregateFunctionUniq.h
+if [ -f "$AFU" ] && grep -q 'AggregateFunctionUniqHLL12Data<String>' "$AFU" \
+   && ! grep -q 'AggregateFunctionUniqHLL12Data<Float32>' "$AFU"; then
+    python3 - "$AFU" <<'PYEOF'
+import sys
+p = sys.argv[1]
+s = open(p, encoding='utf-8', errors='surrogateescape').read()
+def add_after_string_spec(s, base, body):
+    key = 'struct %s<String>' % base
+    if key not in s:
+        return s
+    j = s.index('};', s.index(key)) + 2                 # end of the <String> specialization
+    return s[:j] + body + s[j:]
+hll = ''.join('\n\ntemplate <>\nstruct AggregateFunctionUniqHLL12Data<%s>\n{\n'
+              '\ttypedef HyperLogLogWithSmallSetOptimization<UInt64, 16, 12> Set;\n\tSet set;\n'
+              '\tstatic String getName() { return "uniqHLL12"; }\n};' % t for t in ('Float32', 'Float64'))
+comb = ''.join('\n\ntemplate <>\nstruct AggregateFunctionUniqCombinedData<%s>\n{\n'
+               '\tusing Key = UInt64;\n\tusing Set = CombinedCardinalityEstimator<Key, HashSet<Key, DefaultHash<Key>, HashTableGrower<4> >, 16, 16, 19>;\n\tSet set;\n'
+               '\tstatic String getName() { return "uniqCombined"; }\n};' % t for t in ('Float32', 'Float64'))
+s = add_after_string_spec(s, 'AggregateFunctionUniqHLL12Data', hll)
+s = add_after_string_spec(s, 'AggregateFunctionUniqCombinedData', comb)
+open(p, 'w', encoding='utf-8', errors='surrogateescape').write(s)
+PYEOF
+fi
+
+# -- HyperLogLog counter template arg order: pre-2015-09
+#    HyperLogLogWithSmallSetOptimization instantiates the counter as
+#    HyperLogLogCounter<K, Hash, DenominatorType> (old 3-arg form). The back-ported
+#    (PATCH_REF) counter inserted a HashValueType 3rd parameter, so the old call puts
+#    DenominatorType (float) in the HashValueType slot -> the counter bit-shifts a
+#    float and won't compile. Insert the UInt32 HashValueType (the IntHash32 result
+#    type), matching 2015-09+. CombinedCardinalityEstimator reaches the counter
+#    through SmallSetOptimization, so this single fix covers both. The sed only
+#    matches the old 3-arg form, so it's a no-op on trees that already pass 4 args. --
+SSO=dbms/include/DB/Common/HyperLogLogWithSmallSetOptimization.h
+[ -f "$SSO" ] && sed -i 's#HyperLogLogCounter<K, Hash, DenominatorType>#HyperLogLogCounter<K, Hash, UInt32, DenominatorType>#' "$SSO"
+
 # -- root CMakeLists: add the quicklz/re2_st include dirs and, on the C++ flags,
 #    -fpermissive plus the force-included cmath shim (anchored on the donor's
 #    stable libcityhash include line / -std=gnu++1y flag) --
