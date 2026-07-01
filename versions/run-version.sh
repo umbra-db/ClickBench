@@ -171,6 +171,25 @@ revive_server() {
     return 1
 }
 
+# Report on-disk size per table: via system.parts, or (for old versions without
+# it) by measuring the data directory inside the container, following symlinks.
+report_sizes() {
+    echo "=== table sizes on disk (${VERSION}) ==="
+    local out
+    # Only the benchmark tables (database 'default'), not the server's own
+    # system.* log tables.
+    out=$(client --query "SELECT table, sum(bytes_on_disk) AS size FROM system.parts WHERE database = 'default' GROUP BY table ORDER BY table FORMAT TabSeparated" </dev/null 2>/dev/null)
+    if [ -n "${out}" ]; then
+        printf '%s\n' "${out}"
+    else
+        echo "(system.parts unavailable — measuring the data directory)"
+        sudo docker exec "${CONTAINER}" sh -c '
+            base=/var/lib/clickhouse; [ -d "$base/data" ] || base=/opt/clickhouse
+            du -sLb "$base"/data/default/* 2>/dev/null | sort -k2' 2>/dev/null \
+            || echo "(could not measure data directory)"
+    fi
+}
+
 # Run one query TRIES times, print a JSON array "[t1, t2, t3]" (null on error).
 # If the server dies mid-query (e.g. OOM-killed), revive it and retry up to
 # CRASH_RETRIES times so one heavy query doesn't null out the whole version.
@@ -240,6 +259,7 @@ run_benchmark() {
     } > "${OUT}"
     echo "wrote ${OUT}; result:" >&2
     cat "${OUT}"                                          # emit the JSON so it is captured/received
+    report_sizes
 }
 
 # ---- run ----
