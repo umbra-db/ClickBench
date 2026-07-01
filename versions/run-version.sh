@@ -204,7 +204,7 @@ detect_client() {
 
 # Time every query and write results/<version>.json.
 run_benchmark() {
-    local ACTUAL ds query FIRST=1
+    local ACTUAL ds query FIRST=1 qnum=0 row
     ACTUAL=$(client --query "SELECT version()" 2>/dev/null | tr -d '\r')
     echo "benchmarking ${VERSION} (server reports ${ACTUAL})" >&2
     {
@@ -220,16 +220,20 @@ run_benchmark() {
                 [ -z "${query}" ] && continue
                 query="${query%;}"                       # strip trailing semicolon
                 drop_caches
+                qnum=$((qnum + 1))
+                row="$(run_query "${query}")"
+                echo "q${qnum} [${ds}]: ${row}" >&2      # live timings to the log
                 [ "${FIRST}" = 0 ] && echo ','
                 FIRST=0
-                printf '%s' "$(run_query "${query}")"
+                printf '%s' "${row}"
             done 3< "${HERE}/queries/${ds}.sql"
         done
         echo
         echo '    ]'
         echo '}'
     } > "${OUT}"
-    echo "wrote ${OUT}" >&2
+    echo "wrote ${OUT}; result:" >&2
+    cat "${OUT}"                                          # emit the JSON so it is captured/received
 }
 
 # ---- run ----
