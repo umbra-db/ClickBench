@@ -12,22 +12,27 @@
 #
 # The result behaves like the official server images (see Dockerfile.ubuntu1604).
 
-FROM ubuntu:16.04
+# Ubuntu 14.04 is the era-correct base for these pre-2016-03 snapshots: gcc-5
+# (from the toolchain PPA) defaults to the old libstdc++ ABI here, and trusty's
+# system boost is old-ABI too — so both clickhouse-server AND clickhouse-client
+# link (16.04's new-ABI boost breaks the client's boost::program_options).
+FROM ubuntu:14.04
 
 ARG GCC=5
+# Trusty is still on archive.ubuntu.com (in ESM), so keep the base sources; its
+# Release is expired (Check-Valid-Until=false) and gcc-5 comes from the
+# ubuntu-toolchain-r PPA ([trusted=yes] skips the GPG dance). liblz4/libzstd/
+# double-conversion come from the vendored contrib/, not the (older) system.
 RUN set -eu; \
-    if [ "${GCC}" != "5" ]; then \
-        apt-get update && apt-get install -y --no-install-recommends software-properties-common && \
-        add-apt-repository -y ppa:ubuntu-toolchain-r/test; \
-    fi; \
-    apt-get update && apt-get install -y --no-install-recommends \
+    echo 'deb [trusted=yes] http://ppa.launchpad.net/ubuntu-toolchain-r/test/ubuntu trusty main' > /etc/apt/sources.list.d/toolchain.list; \
+    apt-get -o Acquire::Check-Valid-Until=false update; \
+    apt-get install -y --no-install-recommends --allow-unauthenticated \
         git ca-certificates cmake make pkg-config bash python3 "gcc-${GCC}" "g++-${GCC}" \
         libicu-dev libreadline-dev libssl-dev unixodbc-dev libglib2.0-dev \
         libboost-dev libboost-thread-dev libboost-program-options-dev \
         libboost-system-dev libboost-regex-dev libboost-filesystem-dev \
-        zlib1g-dev liblz4-dev libzstd-dev libdouble-conversion-dev \
-        libsparsehash-dev libmysqlclient-dev libzookeeper-mt-dev \
-        libgoogle-perftools-dev tzdata \
+        zlib1g-dev liblz4-dev libsparsehash-dev libmysqlclient-dev \
+        libzookeeper-mt-dev libgoogle-perftools-dev tzdata \
  && rm -rf /var/lib/apt/lists/*
 
 ENV CC=gcc-${GCC} CXX=g++-${GCC}
@@ -42,7 +47,9 @@ RUN git init -q /src && cd /src \
  && git fetch -q --depth 1 origin "${TAG}"  && git checkout -q --detach FETCH_HEAD \
  && git fetch -q --depth 1 origin "${DONOR}" \
  && git checkout FETCH_HEAD -- contrib \
- && git checkout FETCH_HEAD -- $(git ls-tree -r --name-only FETCH_HEAD | grep -E 'CMakeLists.txt$|\.cmake$')
+ && git checkout FETCH_HEAD -- $(git ls-tree -r --name-only FETCH_HEAD | grep -E 'CMakeLists.txt$|\.cmake$') \
+ && (git checkout FETCH_HEAD -- dbms/include/DB/Dictionaries/Embedded 2>/dev/null || true) \
+ && (git checkout FETCH_HEAD -- libs/libdaemon 2>/dev/null || true)
 
 # Reconcile the donor build system with the older source (globs, stubs, shims).
 COPY reconstruct.sh /reconstruct.sh
@@ -55,12 +62,12 @@ ARG REVISION=53400
 WORKDIR /src/build
 RUN cmake .. -DCMAKE_BUILD_TYPE=Release -DTESTS=NO \
         -DCMAKE_C_COMPILER="gcc-${GCC}" -DCMAKE_CXX_COMPILER="g++-${GCC}" \
- && make -j"$(nproc)" re2 re2_st \
+ && make -j"$(nproc)" re2 && make -j"$(nproc)" re2_st \
  && cp "$(find . -name libre2.a | head -1)" /usr/lib/ \
  && cp "$(find . -name libre2_st.a | head -1)" /usr/lib/ \
  && mkdir -p /src/build/libs/libcommon/src \
  && printf '#ifndef REVISION\n#define REVISION %s\n#endif\n' "${REVISION}" > /src/build/libs/libcommon/src/revision.h \
- && make -j"$(nproc)" clickhouse-server clickhouse-client
+ && make -j"$(nproc)" clickhouse-server && make -j"$(nproc)" clickhouse-client
 
 # Install binaries + a multi-call shim + a minimal IPv4 config (this era ships
 # no default config.xml in the tree).
