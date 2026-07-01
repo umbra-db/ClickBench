@@ -6,7 +6,7 @@
 # Spins up the server, creates the six tables with version-appropriate DDL
 # (create/create.sh), loads the prepared Native files with a plain
 # `clickhouse-client INSERT ... FORMAT Native`, then times every query in
-# queries/{mgbench,ssb,hits,taxi}.sql (TRIES runs each, dropping the page
+# queries/{mgbench,ssb,hits,tpch,tpcds,coffeeshop,ontime,uk,job,taxi}.sql (TRIES runs each, dropping the page
 # cache between queries) and writes results/<version>.json.
 #
 # phase (default "all") splits load from benchmark so run-all.sh can load many
@@ -22,12 +22,12 @@
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DATA="${DATA:-${HERE}/prepare-data/data}"
-TRIES="${TRIES:-3}"
+TRIES="${TRIES:-6}"   # 1 cold + 5 hot runs
 MEM=100000000000   # 100G per-query memory limit
 # Datasets to actually load. Queries for any skipped dataset still run (and
 # report null). E.g. LOAD_DATASETS="hits ssb mgbench" skips the big taxi load
 # while keeping its file on disk.
-LOAD_DATASETS="${LOAD_DATASETS:-hits ssb mgbench taxi}"
+LOAD_DATASETS="${LOAD_DATASETS:-hits ssb mgbench tpch tpcds coffeeshop ontime uk job taxi}"
 
 VERSION="${1:?usage: run-version.sh <version> [image_ref] [phase]}"
 IMAGE="${2:-}"
@@ -44,9 +44,17 @@ declare -A TABLES=(
     [ssb]="lineorder_flat:ssb.native.zst"
     [mgbench]="logs1:mgbench1.native.zst logs2:mgbench2.native.zst logs3:mgbench3.native.zst"
     [taxi]="trips:taxi.native.zst"
+    [tpch]="nation:tpch_nation.native.zst region:tpch_region.native.zst part:tpch_part.native.zst supplier:tpch_supplier.native.zst partsupp:tpch_partsupp.native.zst customer:tpch_customer.native.zst orders:tpch_orders.native.zst lineitem:tpch_lineitem.native.zst"
+    [tpcds]="call_center:tpcds_call_center.native.zst catalog_page:tpcds_catalog_page.native.zst catalog_returns:tpcds_catalog_returns.native.zst catalog_sales:tpcds_catalog_sales.native.zst customer_address:tpcds_customer_address.native.zst customer_demographics:tpcds_customer_demographics.native.zst customer:tpcds_customer.native.zst date_dim:tpcds_date_dim.native.zst household_demographics:tpcds_household_demographics.native.zst income_band:tpcds_income_band.native.zst inventory:tpcds_inventory.native.zst item:tpcds_item.native.zst promotion:tpcds_promotion.native.zst reason:tpcds_reason.native.zst ship_mode:tpcds_ship_mode.native.zst store_returns:tpcds_store_returns.native.zst store_sales:tpcds_store_sales.native.zst store:tpcds_store.native.zst time_dim:tpcds_time_dim.native.zst warehouse:tpcds_warehouse.native.zst web_page:tpcds_web_page.native.zst web_returns:tpcds_web_returns.native.zst web_sales:tpcds_web_sales.native.zst web_site:tpcds_web_site.native.zst"
+    [coffeeshop]="fact_sales:coffeeshop_fact_sales.native.zst dim_locations:coffeeshop_dim_locations.native.zst dim_products:coffeeshop_dim_products.native.zst"
+    [ontime]="ontime:ontime.native.zst"
+    [uk]="uk_price_paid:uk_price_paid.native.zst"
+    [job]="aka_name:job_aka_name.native.zst aka_title:job_aka_title.native.zst cast_info:job_cast_info.native.zst char_name:job_char_name.native.zst comp_cast_type:job_comp_cast_type.native.zst company_name:job_company_name.native.zst company_type:job_company_type.native.zst complete_cast:job_complete_cast.native.zst info_type:job_info_type.native.zst keyword:job_keyword.native.zst kind_type:job_kind_type.native.zst link_type:job_link_type.native.zst movie_companies:job_movie_companies.native.zst movie_info:job_movie_info.native.zst movie_info_idx:job_movie_info_idx.native.zst movie_keyword:job_movie_keyword.native.zst movie_link:job_movie_link.native.zst name:job_name.native.zst person_info:job_person_info.native.zst role_type:job_role_type.native.zst title:job_title.native.zst"
 )
-# Query files are run (and reported) in this fixed order.
-QUERY_ORDER="mgbench ssb hits taxi"
+# Query files are run (and reported) in this fixed order. Each dataset loads
+# into its own database (named after the dataset) so same-named tables (TPC-H
+# and TPC-DS both have `customer`) don't collide.
+QUERY_ORDER="mgbench ssb hits tpch tpcds coffeeshop ontime uk job taxi"
 
 cleanup() { sudo docker rm -f "${CONTAINER}" >/dev/null 2>&1; }
 # The load phase must leave the container running for the later bench phase;
@@ -121,16 +129,19 @@ start_server() {
 load_data() {
     local ds pair table file ddl t0 reader
     for ds in ${LOAD_DATASETS}; do
+        # Each dataset lives in its own database so same-named tables (e.g.
+        # TPC-H and TPC-DS `customer`) don't clash.
+        client --query "CREATE DATABASE IF NOT EXISTS ${ds}" </dev/null 2>/dev/null
         for pair in ${TABLES[$ds]}; do
             table="${pair%%:*}"; file="${pair##*:}"
-            [ -f "${DATA}/${file}" ] || { echo "SKIP ${table}: ${file} not present"; continue; }
-            ddl="$("${HERE}/create/create.sh" "${VERSION}" "${table}")"
-            echo "=== CREATE ${table} on ${VERSION} ==="
+            [ -f "${DATA}/${file}" ] || { echo "SKIP ${ds}.${table}: ${file} not present"; continue; }
+            ddl="$("${HERE}/create/create.sh" "${VERSION}" "${ds}" "${table}")"
+            echo "=== CREATE ${ds}.${table} on ${VERSION} ==="
             echo "${ddl}"
-            if ! printf '%s' "${ddl}" | client --multiquery; then
-                echo "CREATE ${table} FAILED on ${VERSION}"; continue
+            if ! printf '%s' "${ddl}" | client --database "${ds}" --multiquery; then
+                echo "CREATE ${ds}.${table} FAILED on ${VERSION}"; continue
             fi
-            echo "=== INSERT INTO ${table} FORMAT Native  <-  ${file} ($(du -h "${DATA}/${file}" | cut -f1)) ==="
+            echo "=== INSERT INTO ${ds}.${table} FORMAT Native  <-  ${file} ($(du -h "${DATA}/${file}" | cut -f1)) ==="
             # Stream the compressed file through pv (progress %/rate/ETA once a
             # second, based on the known file size) -> zstd -dc -> a plain Native
             # INSERT, so the ancient clickhouse-client never sees compression.
@@ -140,10 +151,10 @@ load_data() {
                 reader=(cat -- "${DATA}/${file}")
             fi
             t0=${SECONDS}
-            if "${reader[@]}" | zstd -dc | client --query "INSERT INTO ${table} FORMAT Native"; then
-                echo "loaded ${table}: $(client --query "SELECT count() FROM ${table}" 2>/dev/null) rows in $((SECONDS - t0))s"
+            if "${reader[@]}" | zstd -dc | client --database "${ds}" --query "INSERT INTO ${table} FORMAT Native"; then
+                echo "loaded ${ds}.${table}: $(client --database "${ds}" --query "SELECT count() FROM ${table}" 2>/dev/null) rows in $((SECONDS - t0))s"
             else
-                echo "LOAD ${table} FAILED on ${VERSION}"
+                echo "LOAD ${ds}.${table} FAILED on ${VERSION}"
             fi
         done
     done
@@ -176,21 +187,21 @@ revive_server() {
 report_sizes() {
     echo "=== table sizes on disk (${VERSION}) ==="
     local out
-    # Only the benchmark tables (database 'default'), not the server's own
-    # system.* log tables.
-    out=$(client --query "SELECT table, sum(bytes_on_disk) AS size FROM system.parts WHERE database = 'default' GROUP BY table ORDER BY table FORMAT TabSeparated" </dev/null 2>/dev/null)
+    # The benchmark tables live in per-dataset databases; exclude the server's
+    # own system databases.
+    out=$(client --query "SELECT database, table, sum(bytes_on_disk) AS size FROM system.parts WHERE database NOT IN ('system', 'information_schema', 'INFORMATION_SCHEMA') GROUP BY database, table ORDER BY database, table FORMAT TabSeparated" </dev/null 2>/dev/null)
     if [ -n "${out}" ]; then
         printf '%s\n' "${out}"
     else
         echo "(system.parts unavailable — measuring the data directory)"
         sudo docker exec "${CONTAINER}" sh -c '
             base=/var/lib/clickhouse; [ -d "$base/data" ] || base=/opt/clickhouse
-            du -sLb "$base"/data/default/* 2>/dev/null | sort -k2' 2>/dev/null \
+            du -sLb "$base"/data/*/* 2>/dev/null | grep -vE "/data/system/" | sort -k2' 2>/dev/null \
             || echo "(could not measure data directory)"
     fi
 }
 
-# Run one query TRIES times, print a JSON array "[t1, t2, t3]" (null on error).
+# Run one query TRIES times, print a JSON array "[t1, ..., tN]" (null on error).
 # If the server dies mid-query (e.g. OOM-killed), revive it and retry up to
 # CRASH_RETRIES times so one heavy query doesn't null out the whole version.
 run_query() {
@@ -198,7 +209,7 @@ run_query() {
     for i in $(seq 1 "${TRIES}"); do
         crash=0
         while :; do
-            res=$(printf '%s' "${query}" | client --time --max_memory_usage="${MEM}" --format=Null 2>&1)
+            res=$(printf '%s' "${query}" | client --database "${QDB:-default}" --time --max_memory_usage="${MEM}" --format=Null 2>&1)
             [[ "${res}" =~ ^[0-9]+\.[0-9]+$ ]] && break
             if ! server_alive && [ "${crash}" -lt "${CRASH_RETRIES:-2}" ]; then
                 crash=$((crash + 1))
@@ -229,7 +240,7 @@ detect_client() {
 
 # Time every query and write results/<version>.json.
 run_benchmark() {
-    local ACTUAL ds query FIRST=1 qnum=0 row
+    local ACTUAL ds query FIRST=1 qnum=0 row QDB
     ACTUAL=$(client --query "SELECT version()" 2>/dev/null | tr -d '\r')
     echo "benchmarking ${VERSION} (server reports ${ACTUAL})" >&2
     {
@@ -239,6 +250,7 @@ run_benchmark() {
         echo '    "result":'
         echo '    ['
         for ds in ${QUERY_ORDER}; do
+            QDB="${ds}"   # run this dataset's queries with its database as default
             # Read queries on FD 3 (not stdin) so the per-query `docker exec/run -i`
             # client calls can't consume the query file.
             while IFS= read -r query <&3; do

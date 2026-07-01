@@ -27,24 +27,43 @@ in its own container — from `1.1.54xxx` (2018) to today — with no host insta
    - `hits.native` — ClickBench `hits` (100M rows, 105 columns).
    - `ssb.native` — Star Schema Benchmark `lineorder_flat` (scale factor 100).
    - `mgbench{1,2,3}.native` — Brown benchmark `logs1`/`logs2`/`logs3`.
-   - `taxi.native` — NYC `trips`.
+   - `tpch_*.native` — TPC-H, 8 tables from the `dbgen` generator at scale
+     factor 40 (~10 GB compressed).
+   - `tpcds_*.native` — TPC-DS, 24 tables from the `dsdgen` generator at scale
+     factor 32 (~10 GB compressed).
+   - `coffeeshop_*.native` — Coffee Shop benchmark (`fact_sales` + `dim_locations`
+     + `dim_products`), from the published Iceberg tables; the smallest fact
+     table (`fact_sales_500m`, 500M rows) is used, minus the unused
+     high-cardinality `order_line_id` column.
+   - `ontime.native` — airline on-time performance (single table), from the saved
+     copy in the public bucket, narrowed to the 12 columns its queries use.
+   - `uk_price_paid.native` — UK land registry "price paid" (single table, ~28M
+     rows / ~200 MB), preprocessed per the ClickHouse docs.
+   - `job_*.native` — Join Order Benchmark, 21 tables (a snapshot of IMDB) from
+     the canonical CSV dump.
+   - `taxi.native` — NYC `trips` (narrowed to the 5 columns its queries use).
 
    Type downgrades: `LowCardinality`→`String`, `IPv4`→`String`,
-   `DateTime64`→`DateTime`, enums→`String`; `Nullable` is kept only where the
-   query set needs `IS NULL` (mgbench `logs1`). Tables without a natural date
-   carry a synthesised `log_date Date` so the legacy `MergeTree` engine works.
+   `DateTime64`→`DateTime`, enums→`String`, TPC-H/TPC-DS `Decimal`→`Float64`
+   (TPC-H `CHAR(N)`→`FixedString(N)`; TPC-DS NULLs → type defaults so its
+   non-Nullable columns load); `Nullable` is kept only where the query set needs
+   `IS NULL` (mgbench `logs1`). Tables without a natural date carry a synthesised
+   `Date` column (`log_date` / TPC-H dimensions' constant `synth_date`) so the
+   legacy `MergeTree` engine works.
 
-3. **`create/create.sh <version> <table>`** — emits version-appropriate DDL.
-   Modern releases use `ENGINE = MergeTree PARTITION BY … ORDER BY …`; the
+3. **`create/create.sh <version> <dataset> <table>`** — emits version-appropriate
+   DDL. Modern releases use `ENGINE = MergeTree PARTITION BY … ORDER BY …`; the
    earliest `1.1.x` (before custom partitioning, < `1.1.54310`) use the legacy
    positional `ENGINE = MergeTree(date, (key), 8192)`. Column lists live in
-   `create/schema/*.columns`.
+   `create/schema/*.columns` (dataset-qualified, e.g. `tpcds_customer.columns`,
+   where a table name is shared across datasets).
 
-4. **`run-version.sh <version> [image]`** — starts the server, creates the
-   tables, loads each Native file with the simplest possible
-   `clickhouse-client INSERT … FORMAT Native`, then times every query in
-   `queries/{mgbench,ssb,hits,taxi}.sql` (`TRIES` runs each, dropping the page
-   cache between queries) and writes `results/<version>.json`.
+4. **`run-version.sh <version> [image]`** — starts the server, creates each
+   dataset's tables **in its own database** (so same-named tables like TPC-H and
+   TPC-DS `customer` don't collide), loads each Native file with the simplest
+   possible `clickhouse-client INSERT … FORMAT Native`, then times every query in
+   `queries/{mgbench,ssb,hits,tpch,tpcds,coffeeshop,taxi}.sql` (`TRIES` runs each,
+   dropping the page cache between queries) and writes `results/<version>.json`.
 
 5. **`run-all.sh`** — runs `run-version.sh` for every selected version.
 
@@ -93,7 +112,7 @@ that self-terminates and sends its result to the sink:
 ```bash
 ./run-benchmark.sh 1.1.54378            # one version on a c7a.4xlarge
 machine=c6a.metal ./run-benchmark.sh 24.8.1.1
-datasets="hits ssb mgbench taxi" ./run-benchmark.sh 25.1.1.1   # include taxi
+datasets="hits ssb" ./run-benchmark.sh 25.1.1.1   # subset of datasets
 ./run-all-benchmarks.sh                 # one VM per runnable version
 ```
 
@@ -107,16 +126,24 @@ result JSON (enriched with the machine type, `kind:"versions-benchmark"`) plus
 the log to `sink.data` on play.clickhouse.com. A server-side materialized view
 turns those into the published report, exactly as the main benchmark does.
 
-Notes: taxi is skipped by default (`datasets="hits ssb mgbench"`) — include it
-only with a much larger `volume=`. While this branch is unmerged, pass
-`branch=versions-benchmark-rework`. Only `hits` and `mgbench` are in the bucket
-so far; missing dataset files are skipped (their queries report null).
+Notes: all datasets run by default (`datasets="hits ssb mgbench tpch tpcds
+coffeeshop taxi"`); the taxi table is narrowed to the five columns its queries
+use (~15 GB), so it no longer dominates. Pass a subset via `datasets=` to skip
+some. While this branch is unmerged, pass `branch=versions-benchmark-rework`.
+Missing dataset files in the bucket are skipped (their queries report null).
 
 ## Query set
 
-75 queries in a fixed order: mgbench (15) + Star Schema Benchmark (13) +
-ClickBench/hits (43) + taxi (4). See `queries/*.sql`. Results are reported one
-row per query, with `null` for queries a given version cannot run.
+344 queries in a fixed order: mgbench (15) + Star Schema Benchmark (13) +
+ClickBench/hits (43) + TPC-H (22) + TPC-DS (103) + Coffee Shop (17) + ontime (11)
++ UK price-paid (3) + Join Order Benchmark (113) + taxi (4). See `queries/*.sql`.
+The TPC-H, TPC-DS and JOB queries are the official sets taken
+from the ClickHouse repository (`tests/benchmarks/tpc-{h,ds}/queries`), flattened
+to one line each (TPC-H Q15 is rewritten from its `CREATE VIEW` form into a single
+`WITH` query; TPC-DS two-part queries become two lines, giving 103 statements from
+the 99 queries). Their many joins, subqueries and window functions only run on
+modern versions — older releases report `null`. Results are reported one row per
+query, with `null` for queries a given version cannot run.
 
 The previous apt-based scripts are kept under `scripts/` and `unified_scripts/`
 for reference.

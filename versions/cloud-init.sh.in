@@ -39,6 +39,12 @@ for ds in ${DATASETS}; do
         hits)    FILES="${FILES} hits.native.zst" ;;
         ssb)     FILES="${FILES} ssb.native.zst" ;;
         mgbench) FILES="${FILES} mgbench1.native.zst mgbench2.native.zst mgbench3.native.zst" ;;
+        tpch)    FILES="${FILES} tpch_nation.native.zst tpch_region.native.zst tpch_part.native.zst tpch_supplier.native.zst tpch_partsupp.native.zst tpch_customer.native.zst tpch_orders.native.zst tpch_lineitem.native.zst" ;;
+        tpcds)   FILES="${FILES} tpcds_call_center.native.zst tpcds_catalog_page.native.zst tpcds_catalog_returns.native.zst tpcds_catalog_sales.native.zst tpcds_customer_address.native.zst tpcds_customer_demographics.native.zst tpcds_customer.native.zst tpcds_date_dim.native.zst tpcds_household_demographics.native.zst tpcds_income_band.native.zst tpcds_inventory.native.zst tpcds_item.native.zst tpcds_promotion.native.zst tpcds_reason.native.zst tpcds_ship_mode.native.zst tpcds_store_returns.native.zst tpcds_store_sales.native.zst tpcds_store.native.zst tpcds_time_dim.native.zst tpcds_warehouse.native.zst tpcds_web_page.native.zst tpcds_web_returns.native.zst tpcds_web_sales.native.zst tpcds_web_site.native.zst" ;;
+        coffeeshop) FILES="${FILES} coffeeshop_fact_sales.native.zst coffeeshop_dim_locations.native.zst coffeeshop_dim_products.native.zst" ;;
+        ontime)  FILES="${FILES} ontime.native.zst" ;;
+        uk)      FILES="${FILES} uk_price_paid.native.zst" ;;
+        job)     FILES="${FILES} job_aka_name.native.zst job_aka_title.native.zst job_cast_info.native.zst job_char_name.native.zst job_comp_cast_type.native.zst job_company_name.native.zst job_company_type.native.zst job_complete_cast.native.zst job_info_type.native.zst job_keyword.native.zst job_kind_type.native.zst job_link_type.native.zst job_movie_companies.native.zst job_movie_info.native.zst job_movie_info_idx.native.zst job_movie_keyword.native.zst job_movie_link.native.zst job_name.native.zst job_person_info.native.zst job_role_type.native.zst job_title.native.zst" ;;
         taxi)    FILES="${FILES} taxi.native.zst" ;;
     esac
 done

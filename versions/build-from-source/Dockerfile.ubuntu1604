@@ -37,14 +37,19 @@ RUN set -eu; \
  && rm -rf /var/lib/apt/lists/*
 
 ENV CC=gcc-${GCC} CXX=g++-${GCC} DISABLE_MONGODB=1
+# TAG may be a tag (v1.1.54318-stable), a bare tag (53973) or a raw commit SHA
+# (for the untagged monthly snapshots). Fetch it by ref/SHA rather than clone
+# --branch, which only accepts named refs.
 ARG TAG
-# The 2016 bare tags vendor contrib (no submodules). The later 1.1.x (>= ~54318,
+# The 2016 tree vendors contrib (no submodules). The later 1.1.x (>= ~54318,
 # Dec 2017) use git submodules, and one of them (contrib/zookeeper at the dead
 # ClickHouse-Extras/zookeeper.git) 404s today. Init submodules one-by-one and
 # tolerate the dead one — cmake's find_zookeeper.cmake then falls back to the
 # system libzookeeper-mt-dev automatically.
-RUN git clone --depth 1 --branch "${TAG}" https://github.com/ClickHouse/ClickHouse.git /src \
- && cd /src \
+RUN git init -q /src && cd /src \
+ && git remote add origin https://github.com/ClickHouse/ClickHouse.git \
+ && git fetch --depth 1 origin "${TAG}" \
+ && git checkout -q --detach FETCH_HEAD \
  && if [ -f .gitmodules ]; then \
         git config -f .gitmodules --get-regexp '\.path$' | awk '{print $2}' | while read -r p; do \
             git submodule update --init --recursive "$p" 2>/dev/null || echo "WARN: skipping unavailable submodule $p"; \

@@ -18,10 +18,10 @@ VERSION="${1:?usage: run-benchmark.sh <version>}"
 machine="${machine:=c7a.4xlarge}"
 repo="${repo:=ClickHouse/ClickBench}"
 branch="${branch:=main}"
-datasets="${datasets:=hits ssb mgbench}"   # taxi skipped by default (huge); add 'taxi' to include
-tries="${tries:=3}"
+datasets="${datasets:=hits ssb mgbench tpch tpcds coffeeshop ontime uk job taxi}"   # each loads into its own database
+tries="${tries:=6}"   # 1 cold + 5 hot runs
 timeout="${timeout:-18000}"                 # load + (optional source build) + queries
-volume="${volume:-500}"                     # GB; raise well past 1000 if including taxi
+volume="${volume:-500}"                     # GB; ample for all datasets (all now < 10 GB compressed)
 # gp3 root volume with provisioned throughput/IOPS (cold-cache query reads and
 # the ingest are disk-bound). gp3 maxes at 1000 MB/s / 16000 IOPS per volume;
 # the instance's own EBS bandwidth is the real ceiling.

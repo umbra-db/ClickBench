@@ -1,6 +1,6 @@
 <?xml version="1.0"?>
 <!-- Force IPv4 listening. Old images default to <listen_host>::</listen_host>
-     (IPv6), which crashes on boot when the host has IPv6 disabled. Mounted into
+     (IPv6), which shuts down on boot when the host has IPv6 disabled. Mounted into
      /etc/clickhouse-server/config.d/. The <yandex> root is accepted by every
      ClickHouse version (it predates the <clickhouse> alias). -->
 <yandex>
