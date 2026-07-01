@@ -37,6 +37,10 @@ PHASE="${3:-all}"
 
 CONTAINER="chver_${VERSION//[^0-9A-Za-z]/_}"
 OUT="${HERE}/results/${VERSION}.json"
+# Per-table load timings, written during the load phase and read by the bench
+# phase (which may be a separate invocation) to build the result's load_time.
+LOAD_STATS="${HERE}/logs/${VERSION}.loadtimes.tsv"
+mkdir -p "${HERE}/logs"
 
 # Datasets => "table:file" pairs to create+load.
 declare -A TABLES=(
@@ -186,6 +190,9 @@ load_one_dataset() {
         fi
         t0=${SECONDS}
         if "${reader[@]}" | zstd -dc | client --database "${ds}" --query "INSERT INTO ${table} FORMAT Native"; then
+            # Record this table's load time (small line -> atomic append, safe
+            # across the parallel per-dataset jobs); summed per dataset at bench.
+            printf '%s\t%s\n' "${ds}" "$((SECONDS - t0))" >> "${LOAD_STATS}"
             echo "loaded ${ds}.${table}: $(client --database "${ds}" --query "SELECT count() FROM ${table}" 2>/dev/null) rows in $((SECONDS - t0))s"
         else
             # An aborted INSERT (crash, OOM, disk full, interrupted stream) can leave
@@ -202,6 +209,7 @@ load_one_dataset() {
 # server. Per-table pv progress lines interleave but stay labelled ds.table.
 load_data() {
     local ds pids=()
+    : > "${LOAD_STATS}"   # fresh per run; per-table load times accumulate here
     for ds in ${LOAD_DATASETS}; do
         load_one_dataset "${ds}" &
         pids+=("$!")
@@ -301,6 +309,30 @@ detect_client() {
     return 1
 }
 
+# {"dataset": sum_of_table_load_seconds, ...} from the load phase (LOAD_STATS).
+emit_load_time_json() {
+    if [ -s "${LOAD_STATS}" ]; then
+        awk -F'\t' '{s[$1]+=$2} END{printf "{"; for(d in s){printf "%s\"%s\": %s",(n++?", ":""),d,s[d]}; printf "}"}' "${LOAD_STATS}"
+    else
+        printf '{}'
+    fi
+}
+
+# {"dataset": on_disk_bytes, ...}: per-database sum of bytes_on_disk (each dataset
+# is its own database), or a data-directory measurement for versions without it.
+emit_data_size_json() {
+    local out
+    out=$(client --query "SELECT database, sum(bytes_on_disk) FROM system.parts WHERE database NOT IN ('system', 'information_schema', 'INFORMATION_SCHEMA') GROUP BY database FORMAT TabSeparated" </dev/null 2>/dev/null)
+    if [ -z "${out}" ]; then
+        out=$(sudo docker exec "${CONTAINER}" sh -c '
+            base=/var/lib/clickhouse; [ -d "$base/data" ] || base=/opt/clickhouse
+            for d in "$base"/data/*/; do [ -d "$d" ] || continue; db=$(basename "$d");
+                [ "$db" = system ] && continue
+                printf "%s\t%s\n" "$db" "$(du -sLb "$d" 2>/dev/null | cut -f1)"; done' 2>/dev/null)
+    fi
+    printf '%s' "${out}" | awk -F'\t' 'BEGIN{printf "{"} NF>=2 && $2!=""{printf "%s\"%s\": %s",(n++?", ":""),$1,$2} END{printf "}"}'
+}
+
 # Time every query and write results/<version>.json.
 run_benchmark() {
     local ACTUAL ds query FIRST=1 qnum=0 row QDB
@@ -310,6 +342,8 @@ run_benchmark() {
         echo '{'
         echo "    \"version\": \"${VERSION}\","
         echo "    \"actual_version\": \"${ACTUAL}\","
+        echo "    \"load_time\": $(emit_load_time_json),"
+        echo "    \"data_size\": $(emit_data_size_json),"
         echo '    "result":'
         echo '    ['
         for ds in ${QUERY_ORDER}; do
