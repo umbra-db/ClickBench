@@ -188,7 +188,11 @@ load_one_dataset() {
         if "${reader[@]}" | zstd -dc | client --database "${ds}" --query "INSERT INTO ${table} FORMAT Native"; then
             echo "loaded ${ds}.${table}: $(client --database "${ds}" --query "SELECT count() FROM ${table}" 2>/dev/null) rows in $((SECONDS - t0))s"
         else
-            echo "LOAD ${ds}.${table} FAILED on ${VERSION}"
+            # An aborted INSERT (crash, OOM, disk full, interrupted stream) can leave
+            # a partially-loaded table. Drop it so its queries report null rather than
+            # timing against incomplete data.
+            echo "LOAD ${ds}.${table} FAILED on ${VERSION}; dropping the incomplete table"
+            client --database "${ds}" --query "DROP TABLE IF EXISTS ${table}" </dev/null 2>/dev/null
         fi
     done
 }
