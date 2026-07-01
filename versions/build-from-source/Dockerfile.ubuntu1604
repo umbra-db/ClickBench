@@ -59,7 +59,11 @@ RUN git init -q /src && cd /src \
 # The 2016 tree hardcodes -Werror in CMAKE_CXX_FLAGS and also leaks clang-only
 # -Wno-* flags into the GCC build, which then fail under -Werror. Strip -Werror
 # from the project's cmake so warnings (incl. unrecognised options) stay non-fatal.
-RUN find /src -name CMakeLists.txt -o -name '*.cmake' | xargs -r sed -i 's/-Werror//g'
+# Also drop add_subdirectory(private): the 2016-06..08 tags reference a
+# Yandex-internal Metrica directory ("private") that was never open-sourced, so
+# the reference is a fatal cmake configure error in the public tree.
+RUN find /src -name CMakeLists.txt -o -name '*.cmake' | xargs -r sed -i 's/-Werror//g' \
+ && find /src -name CMakeLists.txt | xargs -r sed -i '/add_subdirectory *( *private *)/d'
 
 WORKDIR /src/build
 # Build just the server and client. Fall back to the default target set if those

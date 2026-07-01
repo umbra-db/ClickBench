@@ -12,7 +12,9 @@
 export HOME="${HOME:-/root}"
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -y
-apt-get install -y docker.io git wget curl jq zstd pv aria2
+# docker-buildx: run-version.sh builds unpublished (clickhouse-built:*) versions
+# from source with `docker buildx` (the legacy builder hangs on recent engines).
+apt-get install -y docker.io docker-buildx git wget curl jq zstd pv aria2
 systemctl enable --now docker
 
 git clone --depth 1 'https://github.com/@repo@.git' --branch '@branch@' ClickBench
@@ -64,10 +66,9 @@ else
         xargs -P 8 -I{} wget --continue --progress=dot:giga -P "${DATADIR}" "${BUCKET}/{}"
 fi
 
-# Versions with no published Docker image are built from source on this VM.
-if [[ "${IMAGE}" == clickhouse-built:* ]]; then
-    bash build-from-source/build.sh "${VERSION}" "${TAG}" "${GCC}" 2>&1 | tail -n 50
-fi
+# Versions with no published Docker image (clickhouse-built:*) are built from
+# source on the fly by run-version.sh itself (it looks up the recipe in
+# build-from-source/versions.txt or monthly.tsv), so nothing to do here.
 
 echo "=== benchmarking ${VERSION} (image ${IMAGE}, datasets: ${DATASETS}) ==="
 timeout @timeout@ ./run-version.sh "${VERSION}" "${IMAGE}" all 2>&1 | tee -a log

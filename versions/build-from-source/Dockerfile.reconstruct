@@ -1,0 +1,105 @@
+# Reconstruct a pre-2016-03 ClickHouse snapshot that has no public build system.
+#
+# The public repo only became self-contained (root CMakeLists.txt + contrib/) at
+# 2016-03. Earlier commits carry the source but not the build files or vendored
+# libraries. We overlay a donor commit's build system + contrib/ (DONOR, default
+# the 2016-03 snapshot) onto the target source (TAG, a raw commit SHA), reconcile
+# them with reconstruct.sh, supply the vendored libs the donor no longer ships
+# (QuickLZ stub, system tcmalloc), and build clickhouse-server / clickhouse-client.
+#
+#   docker build -f Dockerfile.reconstruct \
+#     --build-arg TAG=<target-sha> --build-arg REVISION=<n> -t clickhouse-built:<date> .
+#
+# The result behaves like the official server images (see Dockerfile.ubuntu1604).
+
+FROM ubuntu:16.04
+
+ARG GCC=5
+RUN set -eu; \
+    if [ "${GCC}" != "5" ]; then \
+        apt-get update && apt-get install -y --no-install-recommends software-properties-common && \
+        add-apt-repository -y ppa:ubuntu-toolchain-r/test; \
+    fi; \
+    apt-get update && apt-get install -y --no-install-recommends \
+        git ca-certificates cmake make pkg-config bash python3 "gcc-${GCC}" "g++-${GCC}" \
+        libicu-dev libreadline-dev libssl-dev unixodbc-dev libglib2.0-dev \
+        libboost-dev libboost-thread-dev libboost-program-options-dev \
+        libboost-system-dev libboost-regex-dev libboost-filesystem-dev \
+        zlib1g-dev liblz4-dev libzstd-dev libdouble-conversion-dev \
+        libsparsehash-dev libmysqlclient-dev libzookeeper-mt-dev \
+        libgoogle-perftools-dev tzdata \
+ && rm -rf /var/lib/apt/lists/*
+
+ENV CC=gcc-${GCC} CXX=g++-${GCC}
+
+# DONOR: the earliest self-contained snapshot (2016-03-01), whose build system
+# and contrib/ we transplant. TAG: the target snapshot's commit SHA.
+ARG DONOR=5360c78806e043d0d2bf3de15a363f87fbdaf5f4
+ARG TAG
+RUN git init -q /src && cd /src \
+ && git config advice.detachedHead false \
+ && git remote add origin https://github.com/ClickHouse/ClickHouse.git \
+ && git fetch -q --depth 1 origin "${TAG}"  && git checkout -q --detach FETCH_HEAD \
+ && git fetch -q --depth 1 origin "${DONOR}" \
+ && git checkout FETCH_HEAD -- contrib \
+ && git checkout FETCH_HEAD -- $(git ls-tree -r --name-only FETCH_HEAD | grep -E 'CMakeLists.txt$|\.cmake$')
+
+# Reconcile the donor build system with the older source (globs, stubs, shims).
+COPY reconstruct.sh /reconstruct.sh
+RUN bash /reconstruct.sh
+
+# Configure, then build. re2/re2_st must be built (and put on the linker search
+# path) before the server links; revision.h is generated directly (the donor's
+# generator does a git-fetch that hangs on a shallow checkout).
+ARG REVISION=53400
+WORKDIR /src/build
+RUN cmake .. -DCMAKE_BUILD_TYPE=Release -DTESTS=NO \
+        -DCMAKE_C_COMPILER="gcc-${GCC}" -DCMAKE_CXX_COMPILER="g++-${GCC}" \
+ && make -j"$(nproc)" re2 re2_st \
+ && cp "$(find . -name libre2.a | head -1)" /usr/lib/ \
+ && cp "$(find . -name libre2_st.a | head -1)" /usr/lib/ \
+ && mkdir -p /src/build/libs/libcommon/src \
+ && printf '#ifndef REVISION\n#define REVISION %s\n#endif\n' "${REVISION}" > /src/build/libs/libcommon/src/revision.h \
+ && make -j"$(nproc)" clickhouse-server clickhouse-client
+
+# Install binaries + a multi-call shim + a minimal IPv4 config (this era ships
+# no default config.xml in the tree).
+RUN set -eu; \
+    SRV=$(find /src/build -type f -executable -name clickhouse-server | head -1); \
+    CLI=$(find /src/build -type f -executable -name clickhouse-client | head -1); \
+    cp "$SRV" /usr/bin/clickhouse-server; cp "$CLI" /usr/bin/clickhouse-client; \
+    printf '#!/bin/sh\ncmd="$1"; shift\nexec "/usr/bin/clickhouse-$cmd" "$@"\n' > /usr/bin/clickhouse; \
+    chmod +x /usr/bin/clickhouse; \
+    mkdir -p /etc/clickhouse-server /var/log/clickhouse-server \
+             /opt/clickhouse/metadata/default /opt/clickhouse/data/default /opt/clickhouse/tmp
+RUN cat > /etc/clickhouse-server/config.xml <<'EOF'
+<yandex>
+    <logger><level>error</level><log>/var/log/clickhouse-server/clickhouse-server.log</log><errorlog>/var/log/clickhouse-server/err.log</errorlog><size>100M</size><count>1</count></logger>
+    <listen_host>0.0.0.0</listen_host>
+    <tcp_port>9000</tcp_port>
+    <http_port>8123</http_port>
+    <path>/opt/clickhouse/</path>
+    <tmp_path>/opt/clickhouse/tmp/</tmp_path>
+    <mark_cache_size>5368709120</mark_cache_size>
+    <uncompressed_cache_size>8589934592</uncompressed_cache_size>
+    <users_config>users.xml</users_config>
+    <default_profile>default</default_profile>
+    <default_database>default</default_database>
+</yandex>
+EOF
+RUN cat > /etc/clickhouse-server/users.xml <<'EOF'
+<yandex>
+    <profiles><default><max_memory_usage>10000000000</max_memory_usage></default></profiles>
+    <users><default>
+        <password></password>
+        <networks><ip>::/0</ip></networks>
+        <profile>default</profile>
+        <quota>default</quota>
+    </default></users>
+    <quotas><default></default></quotas>
+</yandex>
+EOF
+
+EXPOSE 8123 9000
+WORKDIR /
+ENTRYPOINT ["/usr/bin/clickhouse-server", "--config-file=/etc/clickhouse-server/config.xml"]

@@ -71,8 +71,12 @@ CLIENT_MODE=""   # set by start_server: exec | sidecar
 # client can't write its history file. TZ=UTC + the zoneinfo mount: some old
 # client images ship no tzdata and otherwise fail at startup with "Could not
 # determine local time zone" (before any query runs).
-exec_client()    { sudo docker exec -i -e HOME=/tmp -e TZ=UTC "${CONTAINER}" clickhouse client "$@"; }
-sidecar_client() { sudo docker run --rm -i -e HOME=/tmp -e TZ=UTC \
+# CH_TIMEOUT (seconds), when set, wraps the client in `timeout` so a hung/slow
+# query is killed after that long (the connection drop makes the server cancel
+# it). Version-agnostic — no reliance on server-side settings that old builds
+# may lack. Left empty for load/probe/version calls.
+exec_client()    { sudo ${CH_TIMEOUT:+timeout ${CH_TIMEOUT}} docker exec -i -e HOME=/tmp -e TZ=UTC "${CONTAINER}" clickhouse client "$@"; }
+sidecar_client() { sudo ${CH_TIMEOUT:+timeout ${CH_TIMEOUT}} docker run --rm -i -e HOME=/tmp -e TZ=UTC \
                        -v /usr/share/zoneinfo:/usr/share/zoneinfo:ro \
                        --network "container:${CONTAINER}" "${CLIENT_IMAGE}" "$@"; }
 client() {
@@ -80,6 +84,33 @@ client() {
         sidecar) sidecar_client "$@" ;;
         *)       exec_client "$@" ;;
     esac
+}
+
+# Versions with no published image (clickhouse-built:*) are compiled from source
+# on the fly here, so the benchmark is self-contained (nothing is pulled from a
+# registry). The build recipe is looked up by version: tagged / bare-number
+# releases from build-from-source/versions.txt (Dockerfile.ubuntu1604), and the
+# untagged monthly snapshots from build-from-source/monthly.tsv (reconstructed
+# via Dockerfile.reconstruct).
+ensure_built_image() {
+    sudo docker image inspect "${IMAGE}" >/dev/null 2>&1 && return 0
+    local bfs="${HERE}/build-from-source" rec tag gcc sha
+    rec="$(awk -F'\t' -v v="${VERSION}" '$1==v{print; exit}' "${bfs}/versions.txt" 2>/dev/null)"
+    if [ -n "${rec}" ]; then
+        tag="$(cut -f2 <<<"${rec}")"; gcc="$(cut -f4 <<<"${rec}")"
+        echo "building ${IMAGE} from source (tag ${tag:-v${VERSION}-stable}, gcc-${gcc:-5})" >&2
+        bash "${bfs}/build.sh" "${VERSION}" "${tag:-v${VERSION}-stable}" "${gcc:-5}" >&2
+        return $?
+    fi
+    sha="$(awk -F'\t' -v v="${VERSION}" '$1==v{print $2; exit}' "${bfs}/monthly.tsv" 2>/dev/null)"
+    if [ -n "${sha}" ]; then
+        echo "reconstructing ${IMAGE} from source (commit ${sha})" >&2
+        sudo docker buildx build --progress=plain --load --build-arg "TAG=${sha}" \
+            -t "${IMAGE}" -f "${bfs}/Dockerfile.reconstruct" "${bfs}" >&2
+        return $?
+    fi
+    echo "no build recipe for ${VERSION} in versions.txt or monthly.tsv" >&2
+    return 1
 }
 
 start_server() {
@@ -101,7 +132,11 @@ start_server() {
             clickhouse-server --daemon --config /etc/clickhouse-server/config.xml" >&2
     else
         echo "starting ${VERSION} from image ${IMAGE}" >&2
-        sudo docker pull "${IMAGE}" >/dev/null 2>&1
+        if [[ "${IMAGE}" == clickhouse-built:* ]]; then
+            ensure_built_image || { echo "failed to build ${IMAGE}" >&2; return 1; }
+        else
+            sudo docker pull "${IMAGE}" >/dev/null 2>&1
+        fi
         # Mount an IPv4 listen override: old images default to listening on ::
         # (IPv6) and crash on boot when the host has IPv6 disabled.
         sudo docker run -d --name "${CONTAINER}" --ulimit nofile=262144:262144 \
@@ -124,40 +159,51 @@ start_server() {
     return 1
 }
 
-# Load every dataset; tables that fail to create/load are left absent so their
-# queries report null.
-load_data() {
-    local ds pair table file ddl t0 reader
-    for ds in ${LOAD_DATASETS}; do
-        # Each dataset lives in its own database so same-named tables (e.g.
-        # TPC-H and TPC-DS `customer`) don't clash.
-        client --query "CREATE DATABASE IF NOT EXISTS ${ds}" </dev/null 2>/dev/null
-        for pair in ${TABLES[$ds]}; do
-            table="${pair%%:*}"; file="${pair##*:}"
-            [ -f "${DATA}/${file}" ] || { echo "SKIP ${ds}.${table}: ${file} not present"; continue; }
-            ddl="$("${HERE}/create/create.sh" "${VERSION}" "${ds}" "${table}")"
-            echo "=== CREATE ${ds}.${table} on ${VERSION} ==="
-            echo "${ddl}"
-            if ! printf '%s' "${ddl}" | client --database "${ds}" --multiquery; then
-                echo "CREATE ${ds}.${table} FAILED on ${VERSION}"; continue
-            fi
-            echo "=== INSERT INTO ${ds}.${table} FORMAT Native  <-  ${file} ($(du -h "${DATA}/${file}" | cut -f1)) ==="
-            # Stream the compressed file through pv (progress %/rate/ETA once a
-            # second, based on the known file size) -> zstd -dc -> a plain Native
-            # INSERT, so the ancient clickhouse-client never sees compression.
-            if command -v pv >/dev/null 2>&1; then
-                reader=(pv -f -i 1 -N "${table}" -- "${DATA}/${file}")
-            else
-                reader=(cat -- "${DATA}/${file}")
-            fi
-            t0=${SECONDS}
-            if "${reader[@]}" | zstd -dc | client --database "${ds}" --query "INSERT INTO ${table} FORMAT Native"; then
-                echo "loaded ${ds}.${table}: $(client --database "${ds}" --query "SELECT count() FROM ${table}" 2>/dev/null) rows in $((SECONDS - t0))s"
-            else
-                echo "LOAD ${ds}.${table} FAILED on ${VERSION}"
-            fi
-        done
+# Load one dataset: create its database and (create+load) each of its tables.
+# Tables that fail to create/load are left absent so their queries report null.
+load_one_dataset() {
+    local ds="$1" pair table file ddl t0 reader
+    # Each dataset lives in its own database so same-named tables (e.g. TPC-H
+    # and TPC-DS `customer`) don't clash.
+    client --query "CREATE DATABASE IF NOT EXISTS ${ds}" </dev/null 2>/dev/null
+    for pair in ${TABLES[$ds]}; do
+        table="${pair%%:*}"; file="${pair##*:}"
+        [ -f "${DATA}/${file}" ] || { echo "SKIP ${ds}.${table}: ${file} not present"; continue; }
+        ddl="$("${HERE}/create/create.sh" "${VERSION}" "${ds}" "${table}")"
+        echo "=== CREATE ${ds}.${table} on ${VERSION} ==="
+        echo "${ddl}"
+        if ! printf '%s' "${ddl}" | client --database "${ds}" --multiquery; then
+            echo "CREATE ${ds}.${table} FAILED on ${VERSION}"; continue
+        fi
+        echo "=== INSERT INTO ${ds}.${table} FORMAT Native  <-  ${file} ($(du -h "${DATA}/${file}" | cut -f1)) ==="
+        # Stream the compressed file through pv (progress %/rate/ETA once a
+        # second, based on the known file size) -> zstd -dc -> a plain Native
+        # INSERT, so the ancient clickhouse-client never sees compression.
+        if command -v pv >/dev/null 2>&1; then
+            reader=(pv -f -i 1 -N "${ds}.${table}" -- "${DATA}/${file}")
+        else
+            reader=(cat -- "${DATA}/${file}")
+        fi
+        t0=${SECONDS}
+        if "${reader[@]}" | zstd -dc | client --database "${ds}" --query "INSERT INTO ${table} FORMAT Native"; then
+            echo "loaded ${ds}.${table}: $(client --database "${ds}" --query "SELECT count() FROM ${table}" 2>/dev/null) rows in $((SECONDS - t0))s"
+        else
+            echo "LOAD ${ds}.${table} FAILED on ${VERSION}"
+        fi
     done
+}
+
+# Load all datasets in parallel: each dataset (database + its tables) loads in
+# its own background job, so the many INSERTs run concurrently against the
+# server. Per-table pv progress lines interleave but stay labelled ds.table.
+load_data() {
+    local ds pids=()
+    for ds in ${LOAD_DATASETS}; do
+        load_one_dataset "${ds}" &
+        pids+=("$!")
+    done
+    wait "${pids[@]}"
+    echo "=== all dataset loads finished ==="
 }
 
 drop_caches() { sync; echo 3 | sudo tee /proc/sys/vm/drop_caches >/dev/null 2>&1; }
@@ -202,22 +248,35 @@ report_sizes() {
 }
 
 # Run one query TRIES times, print a JSON array "[t1, ..., tN]" (null on error).
-# If the server dies mid-query (e.g. OOM-killed), revive it and retry up to
-# CRASH_RETRIES times so one heavy query doesn't null out the whole version.
+# The remaining tries are skipped (recorded null) once a try either:
+#   * exceeds QUERY_TIMEOUT (default 100s) — no point re-timing a too-slow query, or
+#   * crashes the server (e.g. OOM kill) — the server is revived so later queries
+#     still run, but this query's remaining tries are abandoned.
+# A plain error while the server stays up (e.g. a feature an old version lacks)
+# just records null for that try and keeps going (every try will null anyway).
 run_query() {
-    local query="$1" i res crash out="["
+    local query="$1" i res rc out="[" skip_rest=0
     for i in $(seq 1 "${TRIES}"); do
-        crash=0
-        while :; do
+        if [ "${skip_rest}" = 1 ]; then
+            res="null"                     # an earlier try timed out or crashed; skip the rest
+        else
+            CH_TIMEOUT="${QUERY_TIMEOUT:-100}"
             res=$(printf '%s' "${query}" | client --database "${QDB:-default}" --time --max_memory_usage="${MEM}" --format=Null 2>&1)
-            [[ "${res}" =~ ^[0-9]+\.[0-9]+$ ]] && break
-            if ! server_alive && [ "${crash}" -lt "${CRASH_RETRIES:-2}" ]; then
-                crash=$((crash + 1))
-                echo "${VERSION}: server died mid-query (likely OOM); reviving (retry ${crash})" >&2
-                revive_server && continue
+            rc=$?
+            CH_TIMEOUT=""
+            if [ "${rc}" = 124 ] || [ "${rc}" = 137 ]; then     # `timeout` killed it
+                echo "${VERSION}: query exceeded ${QUERY_TIMEOUT:-100}s; recording null and skipping remaining tries" >&2
+                skip_rest=1; res="null"
+            elif [[ "${res}" =~ ^[0-9]+\.[0-9]+$ ]]; then
+                :                                               # good timing
+            elif ! server_alive; then
+                echo "${VERSION}: server died mid-query (likely OOM); reviving and skipping remaining tries" >&2
+                revive_server || true                           # restore it for the following queries
+                skip_rest=1; res="null"
+            else
+                res="null"                                      # query errored but server is up
             fi
-            res="null"; break
-        done
+        fi
         out+="${res}"
         [ "${i}" -ne "${TRIES}" ] && out+=", "
     done

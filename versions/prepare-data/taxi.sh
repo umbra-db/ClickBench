@@ -31,6 +31,6 @@ SELECT
     toUInt8OrZero(c11)                             AS passenger_count,
     toFloat64OrZero(c12)                           AS trip_distance,
     toFloat32OrZero(c20)                           AS total_amount
-FROM s3('${SRC}', 'CSV', '${STRUCT}')
+FROM s3('${SRC}', 'CSV', '${STRUCT}') ORDER BY pickup_date
 FORMAT Native" | zstd -q -6 -T0 -c > "${OUT}"
 ls -l "${OUT}"
