@@ -22,6 +22,11 @@ datasets="${datasets:=hits ssb mgbench}"   # taxi skipped by default (huge); add
 tries="${tries:=3}"
 timeout="${timeout:-18000}"                 # load + (optional source build) + queries
 volume="${volume:-500}"                     # GB; raise well past 1000 if including taxi
+# gp3 root volume with provisioned throughput/IOPS (cold-cache query reads and
+# the ingest are disk-bound). gp3 maxes at 1000 MB/s / 16000 IOPS per volume;
+# the instance's own EBS bandwidth is the real ceiling.
+iops="${iops:-16000}"
+throughput="${throughput:-1000}"            # MB/s
 
 # Resolve the version against list-versions.sh: accept an exact version
 # (26.6.1.1193, 1.1.54378, 53973) or a prefix at a dot boundary, choosing the
@@ -61,7 +66,7 @@ awk -v repo="$repo" -v branch="$branch" -v version="$VERSION" -v image="$image" 
 RETRY_RE='InsufficientInstanceCapacity|VcpuLimitExceeded|InstanceLimitExceeded|MaxSpotInstanceCountExceeded'
 while :; do
     out=$(AWS_PAGER='' aws ec2 run-instances --image-id "$ami" --instance-type "$machine" \
-        --block-device-mappings "DeviceName=/dev/sda1,Ebs={DeleteOnTermination=true,VolumeSize=${volume},VolumeType=gp2}" \
+        --block-device-mappings "DeviceName=/dev/sda1,Ebs={DeleteOnTermination=true,VolumeSize=${volume},VolumeType=gp3,Iops=${iops},Throughput=${throughput}}" \
         --instance-initiated-shutdown-behavior terminate \
         --tag-specifications "ResourceType=instance,Tags=[{Key=Name,Value=clickbench-versions-${VERSION}}]" \
         --user-data "file://cloud-init.${VERSION}.sh" 2>&1) && rc=0 || rc=$?
