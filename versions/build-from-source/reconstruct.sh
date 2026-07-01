@@ -249,6 +249,81 @@ fi
 if [ ! -e dbms/include/DB/Core/FieldVisitors.h ] && [ -e dbms/include/DB/Core/Field.h ]; then
     printf '#pragma once\n#include <DB/Core/Field.h>\n' > dbms/include/DB/Core/FieldVisitors.h
 fi
+
+# -- PoolWithFailoverBase (pre-2015-07): the failover connection-pool base lived in
+#    the never-public external statdaemons library and took TWO template args
+#    <TNestedPool, TSettings>. It was reworked into a single-arg in-repo class in
+#    2015-07; the back-ported (PATCH_FILL) 1-arg version is incompatible with this
+#    era's ConnectionPoolWithFailover (wrong arity, needs Settings::skip_unavailable_shards).
+#    Only ConnectionPoolWithFailover derives from it, and the single-node benchmark
+#    never configures remote_servers, so the pool is never even constructed. Vendor a
+#    minimal 2-arg base exposing just the surface the derived class uses (ctor,
+#    nested_pools[].pool/.state.priority, get/getMany/tryGet); get/getMany simply
+#    throw. Created before the auto-map so it wins over the 1-arg forward, which means
+#    the incompatible filled base is never included. Guarded on the 2-arg form, so it
+#    is skipped on 2015-07+ (their 1-arg ConnectionPoolWithFailover uses the fill). --
+if [ -f dbms/include/DB/Client/ConnectionPoolWithFailover.h ] \
+   && grep -qE 'PoolWithFailoverBase<[^,>]+,' dbms/include/DB/Client/ConnectionPoolWithFailover.h; then
+    cat > contrib/statdaemons-compat/statdaemons/PoolWithFailoverBase.h <<'EOF'
+#pragma once
+// Vendored 2-argument PoolWithFailoverBase for pre-2015-07 trees (the failover pool
+// base was external then). Distributed connections are never opened by the
+// single-node benchmark, so this only needs to compile and expose the small surface
+// ConnectionPoolWithFailover uses; get()/getMany() throw if ever called.
+#include <vector>
+#include <sstream>
+#include <cstddef>
+#include <ctime>
+#include <Poco/SharedPtr.h>
+#include <Poco/Logger.h>
+#include <Poco/Exception.h>
+
+template <typename TNestedPool, typename TSettings>
+class PoolWithFailoverBase
+{
+public:
+    using NestedPool = TNestedPool;
+    using NestedPoolPtr = Poco::SharedPtr<TNestedPool>;
+    using Entry = typename TNestedPool::Entry;
+
+    struct PoolState { std::size_t priority = 0; };
+    struct PoolWithState { NestedPoolPtr pool; PoolState state; };
+    using NestedPools = std::vector<NestedPoolPtr>;
+
+    PoolWithFailoverBase(NestedPools & nested_pools_, std::size_t max_tries_,
+        time_t decrease_error_period_, Poco::Logger * log_)
+        : max_tries(max_tries_), decrease_error_period(decrease_error_period_), log(log_)
+    {
+        nested_pools.reserve(nested_pools_.size());
+        for (const auto & p : nested_pools_)
+        {
+            PoolWithState pws;
+            pws.pool = p;
+            nested_pools.push_back(pws);
+        }
+    }
+    virtual ~PoolWithFailoverBase() {}
+
+    Entry get(TSettings)
+    {
+        throw Poco::Exception("Distributed connection pool is not available in this reconstructed build");
+    }
+    std::vector<Entry> getMany(TSettings)
+    {
+        throw Poco::Exception("Distributed connection pool is not available in this reconstructed build");
+    }
+
+protected:
+    virtual bool tryGet(NestedPoolPtr pool, TSettings settings, Entry & out_entry,
+        std::stringstream & fail_message) = 0;
+
+    std::vector<PoolWithState> nested_pools;
+    std::size_t max_tries;
+    time_t decrease_error_period;
+    Poco::Logger * log;
+};
+EOF
+fi
 # Auto-map every donor header of the same basename to the old <statdaemons/X.h>
 # path: the statdaemons library's contents were dispersed into DB/Common/,
 # common/ and DB/Dictionaries/Embedded/ (e.g. Exception.h -> DB/Common/Exception.h,
