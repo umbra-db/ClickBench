@@ -12,7 +12,7 @@
 export HOME="${HOME:-/root}"
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -y
-apt-get install -y docker.io git wget curl jq zstd pv
+apt-get install -y docker.io git wget curl jq zstd pv aria2
 systemctl enable --now docker
 
 git clone --depth 1 'https://github.com/@repo@.git' --branch '@branch@' ClickBench
@@ -43,8 +43,18 @@ for ds in ${DATASETS}; do
     esac
 done
 echo "downloading in parallel:${FILES}"
-echo ${FILES} | tr ' ' '\n' | grep . | \
-    xargs -P 8 -I{} wget --continue --progress=dot:giga -P "${DATADIR}" "${BUCKET}/{}"
+if command -v aria2c >/dev/null 2>&1; then
+    # aria2 splits each file into parallel byte-range segments (-x/-s) and also
+    # runs several files at once (-j), so the huge taxi file isn't one slow
+    # stream. S3 supports Range requests. A missing file just errors and is
+    # skipped (|| true).
+    urls=""; for f in ${FILES}; do urls="${urls} ${BUCKET}/${f}"; done
+    aria2c --continue=true --dir="${DATADIR}" -j4 -x16 -s16 --min-split-size=20M \
+        --summary-interval=10 --auto-file-renaming=false ${urls} || true
+else
+    echo ${FILES} | tr ' ' '\n' | grep . | \
+        xargs -P 8 -I{} wget --continue --progress=dot:giga -P "${DATADIR}" "${BUCKET}/{}"
+fi
 
 # Versions with no published Docker image are built from source on this VM.
 if [[ "${IMAGE}" == clickhouse-built:* ]]; then
