@@ -91,8 +91,13 @@ emit() {  # version date  -> resolve provider and print the line
         # No image. packages.clickhouse.com ships .tgz from 21.1 on; older = gone.
         [ "${v%%.*}" -ge 21 ] 2>/dev/null && image="package" || image="unavailable"
     fi
-    # Prefer a from-source build where we have one (resurrects the oldest).
-    [ "${image}" = "unavailable" ] && [ -n "${BUILT_DATE[$v]:-}" ] && image="clickhouse-built:${v}"
+    # Prefer a from-source build where we have one (resurrects the oldest), and
+    # for built versions report the real commit date from versions.txt rather
+    # than the version_date.tsv release date.
+    if [ "${image}" = "unavailable" ] && [ -n "${BUILT_DATE[$v]:-}" ]; then
+        image="clickhouse-built:${v}"
+    fi
+    [[ "${image}" == clickhouse-built:* ]] && date="${BUILT_DATE[$v]:-$date}"
     printf '%s\t%s\t%s\n' "${v}" "${image}" "${date}"
 }
 
