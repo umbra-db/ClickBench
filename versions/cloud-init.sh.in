@@ -12,7 +12,7 @@
 export HOME="${HOME:-/root}"
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -y
-apt-get install -y docker.io git wget curl jq zstd
+apt-get install -y docker.io git wget curl jq zstd pv
 systemctl enable --now docker
 
 git clone --depth 1 'https://github.com/@repo@.git' --branch '@branch@' ClickBench

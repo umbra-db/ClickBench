@@ -119,7 +119,7 @@ start_server() {
 # Load every dataset; tables that fail to create/load are left absent so their
 # queries report null.
 load_data() {
-    local ds pair table file ddl t0
+    local ds pair table file ddl t0 reader
     for ds in ${LOAD_DATASETS}; do
         for pair in ${TABLES[$ds]}; do
             table="${pair%%:*}"; file="${pair##*:}"
@@ -131,10 +131,16 @@ load_data() {
                 echo "CREATE ${table} FAILED on ${VERSION}"; continue
             fi
             echo "=== INSERT INTO ${table} FORMAT Native  <-  ${file} ($(du -h "${DATA}/${file}" | cut -f1)) ==="
-            # Decompress on the host and stream plain Native into the client, so
-            # the (possibly ancient) clickhouse-client never sees compression.
+            # Stream the compressed file through pv (progress %/rate/ETA once a
+            # second, based on the known file size) -> zstd -dc -> a plain Native
+            # INSERT, so the ancient clickhouse-client never sees compression.
+            if command -v pv >/dev/null 2>&1; then
+                reader=(pv -f -i 1 -N "${table}" -- "${DATA}/${file}")
+            else
+                reader=(cat -- "${DATA}/${file}")
+            fi
             t0=${SECONDS}
-            if zstd -dc "${DATA}/${file}" | client --query "INSERT INTO ${table} FORMAT Native"; then
+            if "${reader[@]}" | zstd -dc | client --query "INSERT INTO ${table} FORMAT Native"; then
                 echo "loaded ${table}: $(client --query "SELECT count() FROM ${table}" 2>/dev/null) rows in $((SECONDS - t0))s"
             else
                 echo "LOAD ${table} FAILED on ${VERSION}"
