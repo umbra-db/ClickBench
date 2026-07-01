@@ -58,7 +58,13 @@ declare -A TABLES=(
 # Query files are run (and reported) in this fixed order. Each dataset loads
 # into its own database (named after the dataset) so same-named tables (TPC-H
 # and TPC-DS both have `customer`) don't collide.
-QUERY_ORDER="mgbench ssb hits tpch tpcds coffeeshop ontime uk job taxi"
+#
+# Order matters for resilience: a query that OOMs/crashes the server nulls not
+# just itself but every query that runs before the server is revived. So the
+# reliable, light datasets run FIRST and the heavy, crash-/timeout-prone ones
+# (tpch, tpcds, job — big multi-way joins, INTERSECT, self-joins) run LAST, so a
+# late crash can't take down the earlier datasets' results as collateral.
+QUERY_ORDER="mgbench ssb hits uk ontime taxi coffeeshop tpch tpcds job"
 
 cleanup() { sudo docker rm -f "${CONTAINER}" >/dev/null 2>&1; }
 # The load phase must leave the container running for the later bench phase;
@@ -225,18 +231,50 @@ drop_caches() { sync; echo 3 | sudo tee /proc/sys/vm/drop_caches >/dev/null 2>&1
 # stdin, so a bare probe here would swallow the remaining queries.
 server_alive() { client --query "SELECT 1" </dev/null >/dev/null 2>&1; }
 
-# Bring the server back after a crash. An OOM kill takes down clickhouse-server
-# (PID 1 for image providers), so the container exits — but its data layer
-# survives, so `docker start` restarts it with the loaded tables intact. For the
-# package provider the container (PID 1 = sleep) stays up, so relaunch the daemon.
+# Bring the server back after a crash — best effort, several strategies in turn.
+# A crash lands in one of two container states:
+#   * container EXITED — clickhouse-server was PID 1 (most image providers) and the
+#     OOM kill took it (and the container) down. `docker start` relaunches it with
+#     the loaded tables intact.
+#   * container still RUNNING — the server *process* died but PID 1 survived: the
+#     package provider (PID 1 = sleep), or an image whose entrypoint is a wrapper
+#     script that didn't exec the server. Here `docker start` is a no-op, so we
+#     must relaunch the daemon *inside* the container.
+# We try both, wait (a server re-attaching billions of rows of parts can take a
+# while — hence a generous timeout), and fall back to a full `docker restart`.
+# Every step is logged so a persistent failure is diagnosable from the run log.
+launch_daemon_in_container() {
+    sudo docker exec -d "${CONTAINER}" sh -c \
+        'clickhouse-server --daemon --config /etc/clickhouse-server/config.xml 2>/dev/null \
+         || clickhouse server --daemon --config /etc/clickhouse-server/config.xml 2>/dev/null \
+         || clickhouse-server --config /etc/clickhouse-server/config.xml 2>/dev/null' 2>/dev/null || true
+}
+wait_alive() { local i; for i in $(seq 1 "${1:-180}"); do server_alive && return 0; sleep 1; done; return 1; }
 revive_server() {
-    if [ "$(sudo docker inspect -f '{{.State.Running}}' "${CONTAINER}" 2>/dev/null)" != "true" ]; then
-        sudo docker start "${CONTAINER}" >/dev/null 2>&1
-    elif [ "${IMAGE}" = "package" ]; then
-        sudo docker exec -d "${CONTAINER}" clickhouse-server --daemon --config /etc/clickhouse-server/config.xml 2>/dev/null
+    local running
+    running="$(sudo docker inspect -f '{{.State.Running}}' "${CONTAINER}" 2>/dev/null)"
+    echo "${VERSION}: reviving server (container running=${running:-unknown}); recent container logs:" >&2
+    sudo docker logs --tail 8 "${CONTAINER}" 2>&1 | sed 's/^/      | /' >&2 || true
+
+    # Strategy 1: exited container -> start it back up.
+    if [ "${running}" != "true" ]; then
+        sudo docker start "${CONTAINER}" >/dev/null 2>&1 || echo "${VERSION}: 'docker start' failed" >&2
     fi
-    local i
-    for i in $(seq 1 "${READY_TIMEOUT:-90}"); do server_alive && return 0; sleep 1; done
+    # Strategy 2: container up but server process dead -> relaunch the daemon inside.
+    if [ "$(sudo docker inspect -f '{{.State.Running}}' "${CONTAINER}" 2>/dev/null)" = "true" ] && ! server_alive; then
+        launch_daemon_in_container
+    fi
+    wait_alive "${REVIVE_TIMEOUT:-180}" && { echo "${VERSION}: server back up" >&2; return 0; }
+
+    # Strategy 3 (last resort): force a full container restart, then relaunch the
+    # daemon (needed for the package provider, whose PID 1 is sleep, not the server).
+    echo "${VERSION}: still down after ${REVIVE_TIMEOUT:-180}s; forcing 'docker restart'" >&2
+    sudo docker restart -t 5 "${CONTAINER}" >/dev/null 2>&1 || echo "${VERSION}: 'docker restart' failed" >&2
+    server_alive || launch_daemon_in_container
+    wait_alive "${REVIVE_TIMEOUT:-180}" && { echo "${VERSION}: server back up after restart" >&2; return 0; }
+
+    echo "${VERSION}: could not revive server; final container logs:" >&2
+    sudo docker logs --tail 30 "${CONTAINER}" 2>&1 | sed 's/^/      | /' >&2 || true
     return 1
 }
 
@@ -259,6 +297,37 @@ report_sizes() {
     fi
 }
 
+# Collapse a (possibly multi-line) client error into one tidy, capped log line.
+fmt_err() { printf '%s' "$1" | tr '\n\t' '  ' | sed 's/  */ /g; s/^ //' | cut -c1-800; }
+
+# Version ordering across the whole timeline. Normalise any version we run to a
+# 4-number key (major minor patch build):
+#   * a bare build number (e.g. 53982) is a 2016 1.1.x snapshot -> 1.1.<n>.0
+#   * 1.1.54378 / 20.5 / 26.6.1.1193 -> their dotted components (missing => 0)
+# so 1.1.54378 and the bare 53982 both sort *below* any calendar release.
+version_key() {
+    local v="$1" a b c d
+    if [[ "$v" =~ ^[0-9]+$ ]]; then echo "1 1 $v 0"; return; fi
+    IFS='.' read -r a b c d _ <<<"$v"
+    echo "${a:-0} ${b:-0} ${c:-0} ${d:-0}"
+}
+# version_ge A B  -> true if A >= B
+version_ge() {
+    local -a x y; read -ra x <<<"$(version_key "$1")"; read -ra y <<<"$(version_key "$2")"
+    local i
+    for i in 0 1 2 3; do
+        [ "${x[i]}" -gt "${y[i]}" ] && return 0
+        [ "${x[i]}" -lt "${y[i]}" ] && return 1
+    done
+    return 0
+}
+# A results row of all-null (used when a query is skipped as unsupported).
+null_row() {
+    local i out="["
+    for i in $(seq 1 "${TRIES}"); do out+="null"; [ "${i}" -ne "${TRIES}" ] && out+=", "; done
+    echo "${out}]"
+}
+
 # Run one query TRIES times, print a JSON array "[t1, ..., tN]" (null on error).
 # The remaining tries are skipped (recorded null) once a try either:
 #   * exceeds QUERY_TIMEOUT (default 100s) — no point re-timing a too-slow query, or
@@ -266,8 +335,11 @@ report_sizes() {
 #     still run, but this query's remaining tries are abandoned.
 # A plain error while the server stays up (e.g. a feature an old version lacks)
 # just records null for that try and keeps going (every try will null anyway).
+# Whatever the failure mode, the reason (and the server's error text, when there is
+# one) is written to the log ONCE per query — tagged with the query's label — so a
+# null in the results can be traced to an unsupported feature, a timeout or a crash.
 run_query() {
-    local query="$1" i res rc out="[" skip_rest=0
+    local query="$1" label="${2:-query}" i res rc out="[" skip_rest=0 logged=0
     for i in $(seq 1 "${TRIES}"); do
         if [ "${skip_rest}" = 1 ]; then
             res="null"                     # an earlier try timed out or crashed; skip the rest
@@ -277,16 +349,19 @@ run_query() {
             rc=$?
             CH_TIMEOUT=""
             if [ "${rc}" = 124 ] || [ "${rc}" = 137 ]; then     # `timeout` killed it
-                echo "${VERSION}: query exceeded ${QUERY_TIMEOUT:-100}s; recording null and skipping remaining tries" >&2
-                skip_rest=1; res="null"
+                [ "${logged}" = 0 ] && echo "${label}: FAILED (timeout >${QUERY_TIMEOUT:-100}s); recording null, skipping remaining tries" >&2
+                logged=1; skip_rest=1; res="null"
             elif [[ "${res}" =~ ^[0-9]+\.[0-9]+$ ]]; then
                 :                                               # good timing
             elif ! server_alive; then
-                echo "${VERSION}: server died mid-query (likely OOM); reviving and skipping remaining tries" >&2
-                revive_server || true                           # restore it for the following queries
+                [ "${logged}" = 0 ] && echo "${label}: FAILED (server died mid-query, likely OOM); reviving, skipping remaining tries. Last output: $(fmt_err "${res}")" >&2
+                logged=1; revive_server || true                 # restore it for the following queries
                 skip_rest=1; res="null"
             else
-                res="null"                                      # query errored but server is up
+                # Query errored but the server is up (e.g. unsupported syntax/function
+                # on an old version). Record null and log the server's error message.
+                [ "${logged}" = 0 ] && echo "${label}: FAILED (error): $(fmt_err "${res}")" >&2
+                logged=1; res="null"
             fi
         fi
         out+="${res}"
@@ -335,7 +410,7 @@ emit_data_size_json() {
 
 # Time every query and write results/<version>.json.
 run_benchmark() {
-    local ACTUAL ds query FIRST=1 qnum=0 row QDB
+    local ACTUAL ds query FIRST=1 qnum=0 row QDB MINVERS mv lidx
     ACTUAL=$(client --query "SELECT version()" 2>/dev/null | tr -d '\r')
     echo "benchmarking ${VERSION} (server reports ${ACTUAL})" >&2
     {
@@ -348,15 +423,29 @@ run_benchmark() {
         echo '    ['
         for ds in ${QUERY_ORDER}; do
             QDB="${ds}"   # run this dataset's queries with its database as default
+            # Per-query minimum supported version (queries/<ds>.minver, one token per
+            # query, aligned to <ds>.sql): "0" = runs everywhere, a version = first
+            # release known to run it, "26.7"(future) = never seen to succeed. When
+            # the current version is below a query's minimum we record null WITHOUT
+            # running it — the outcome is known and running it only wastes time (and
+            # risks a crash that would null later queries too).
+            MINVERS=(); [ -f "${HERE}/queries/${ds}.minver" ] && mapfile -t MINVERS < "${HERE}/queries/${ds}.minver"
+            lidx=0
             # Read queries on FD 3 (not stdin) so the per-query `docker exec/run -i`
             # client calls can't consume the query file.
             while IFS= read -r query <&3; do
                 [ -z "${query}" ] && continue
                 query="${query%;}"                       # strip trailing semicolon
-                drop_caches
                 qnum=$((qnum + 1))
-                row="$(run_query "${query}")"
-                echo "q${qnum} [${ds}]: ${row}" >&2      # live timings to the log
+                mv="${MINVERS[lidx]:-0}"; lidx=$((lidx + 1))
+                if [ "${mv}" != "0" ] && ! version_ge "${VERSION}" "${mv}"; then
+                    row="$(null_row)"
+                    echo "q${qnum} [${ds}]: SKIPPED (min supported ${mv}); recording null" >&2
+                else
+                    drop_caches
+                    row="$(run_query "${query}" "q${qnum} [${ds}]")"
+                    echo "q${qnum} [${ds}]: ${row}" >&2  # live timings to the log
+                fi
                 [ "${FIRST}" = 0 ] && echo ','
                 FIRST=0
                 printf '%s' "${row}"
