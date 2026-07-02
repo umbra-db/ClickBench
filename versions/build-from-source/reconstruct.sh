@@ -815,6 +815,14 @@ if [ -f "$DEF" ] && ! grep -q 'ALWAYS_INLINE' "$DEF"; then
     printf '\n#ifndef ALWAYS_INLINE\n#define ALWAYS_INLINE __attribute__((__always_inline__))\n#endif\n' >> "$DEF"
 fi
 
+# -- IPv4 listen: pre-2014-12 Server.cpp hardcodes Poco SocketAddress("[::]:<port>")
+#    (the IPv6 wildcard), which fails with EAI_ADDRFAMILY on an IPv6-disabled host, so
+#    the server exits on boot ("DNS error: EAI: -9"). Rewrite to 0.0.0.0 so it listens
+#    on IPv4 (the benchmark connects over 127.0.0.1). 2014-12+ take the listen host
+#    from config, so this is a no-op there. --
+SRV=dbms/src/Server/Server.cpp
+[ -f "$SRV" ] && sed -i 's#\[::\]:#0.0.0.0:#g' "$SRV"
+
 # -- uniq on Float32/Float64 (pre-2015-09): AggregateFunctionUniq{HLL12,Combined}Data
 #    typedef their HyperLogLog / CombinedCardinalityEstimator Set over the raw column
 #    type T, so uniq(Float) instantiates the HLL on `float`. But OneAdder inserts the
