@@ -32,6 +32,7 @@ mapfile -t VERSIONS < <(CH --query "
     SELECT DISTINCT JSONExtractString(content, 'version') AS v
     FROM sink.data
     WHERE JSONExtractString(content, 'kind') = 'versions-benchmark' AND v != ''
+      AND length(JSONExtractArrayRaw(content, 'result')) = 344
     ORDER BY v
     FORMAT TSV")
 
@@ -44,10 +45,12 @@ for v in "${VERSIONS[@]}"; do
         SELECT argMax(content, time) FROM sink.data
         WHERE JSONExtractString(content, 'kind') = 'versions-benchmark'
           AND JSONExtractString(content, 'version') = '${v}'
+          AND length(JSONExtractArrayRaw(content, 'result')) = 344
         FORMAT TSVRaw" > /tmp/vb-content.json
     rd="$(reldate "${v}")"
     # Keep the recorded fields; add release_date (preferring one already in the payload).
-    jq -S --arg rd "${rd}" \
+    # Compact one line per file: these are generated artifacts, kept small in git.
+    jq -cS --arg rd "${rd}" \
         '. + {release_date: (.release_date // (if $rd == "" then null else $rd end))}' \
         /tmp/vb-content.json > "results/${v}.json"
     echo "  results/${v}.json (released ${rd:-unknown})" >&2
