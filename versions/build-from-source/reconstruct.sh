@@ -606,6 +606,21 @@ if [ -d libs/libcommon/include/common ]; then
     [ -e libs/libcommon/include/common/optimization.h ] || \
         printf '#pragma once\n#if !defined(likely)\n#define likely(x)   __builtin_expect(!!(x), 1)\n#endif\n#if !defined(unlikely)\n#define unlikely(x) __builtin_expect(!!(x), 0)\n#endif\n' \
             > libs/libcommon/include/common/optimization.h
+    # LOG_* macros: the 2012 / early-2013 prototypes call them as block statements with
+    # no trailing ';' (e.g. TCPHandler.cpp's connect log), which the donor's
+    # do{...}while(0) form rejects ("expected ';' before '}'"). Convert do{...}while(0)
+    # -> a plain {...} block so the trailing ';' becomes optional. Restrict this to those
+    # old snapshots (commit date < 2013-01-01): from 2013-02 on the code writes the ';'
+    # AND uses LOG in unbraced if/else (e.g. libzkutil Lock.cpp), where a bare block
+    # breaks the dangling-else the do/while idiom guards against.
+    # %ci (not %cs) -- the 14.04 image's git predates %cs (git 2.10) and would emit the
+    # literal "%cs", which sorts before the threshold and would wrongly match every build.
+    CH_COMMIT_DATE=$(git show -s --format=%ci HEAD 2>/dev/null | cut -d' ' -f1 || true)
+    if [ -e libs/libcommon/include/common/logger_useful.h ] \
+       && printf '%s' "${CH_COMMIT_DATE}" | grep -qE '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' \
+       && [ "${CH_COMMIT_DATE}" \< "2013-01-01" ]; then
+        sed -i 's/ do {/ {/g; s/} while(0)/}/g; s/} while (0)/}/g' libs/libcommon/include/common/logger_useful.h
+    fi
     # Yandex/time2str.h: external time helpers the donor folded into DateLUT. The only
     # ones used by compiled (non-Server, non-test) code are the MergeTree part-naming
     # helpers Date2OrderedIdentifier / OrderedIdentifier2Date; implement them via
