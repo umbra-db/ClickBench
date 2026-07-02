@@ -84,6 +84,20 @@ if [ -f "${BUILT_FILE}" ]; then
     done < "${BUILT_FILE}"
 fi
 
+# Prehistoric monthly builds reconstructed from source
+# (build-from-source/monthly-built.tsv): date-labeled YYYY-MM-01, each an image
+# clickhouse-built:<month>. They predate version_date.tsv entirely (2012-04 .. 2016-02);
+# months before 2012-04 have no server binary and are recorded as pre-server -- skip those.
+# Commit dates come from monthly.tsv (its authoritative 3rd column).
+MONTHLY_BUILT="${HERE}/build-from-source/monthly-built.tsv"
+MONTHLY_TSV="${HERE}/build-from-source/monthly.tsv"
+declare -A MONTH_DATE=()
+if [ -f "${MONTHLY_TSV}" ]; then
+    while IFS=$'\t' read -r m _sha mdate _rev; do
+        [ -n "${m}" ] && MONTH_DATE["${m}"]="${mdate}"
+    done < "${MONTHLY_TSV}"
+fi
+
 emit() {  # version date  -> resolve provider and print the line
     local v="$1" date="$2" image
     image="$(resolve_image "${v}")"
@@ -127,4 +141,14 @@ emit() {  # version date  -> resolve provider and print the line
         case "${bv}" in *.*) continue ;; esac   # skip the 1.1.x ones (handled above)
         printf '%s\tclickhouse-built:%s\t%s\n' "${bv}" "${bv}" "${BUILT_DATE[$bv]}"
     done
+
+    # Prehistoric monthly builds (2012-04 .. 2016-02), reconstructed from source and
+    # labeled by month; skip the pre-server months that could not be built.
+    if [ -f "${MONTHLY_BUILT}" ]; then
+        while IFS=$'\t' read -r m _sha note; do
+            [ -z "${m}" ] && continue
+            case "${note}" in pre-server*) continue ;; esac   # no server binary -> not runnable
+            printf '%s\tclickhouse-built:%s\t%s\n' "${m}" "${m}" "${MONTH_DATE[$m]:-${m}}"
+        done < "${MONTHLY_BUILT}"
+    fi
 } | sort -t$'\t' -k3,3 -k1,1V   # chronological by release date
