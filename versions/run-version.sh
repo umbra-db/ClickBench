@@ -472,7 +472,7 @@ emit_data_size_json() {
     # A dataset with no load time is treated as not loaded, so its size is omitted
     # (null on the page) rather than reporting an empty/partial directory.
     loaded=" $(awk -F'\t' '{print $1}' "${LOAD_STATS}" 2>/dev/null | sort -u | tr '\n' ' ')"
-    out=$(client --query "SELECT database, sum(bytes_on_disk) FROM system.parts WHERE database NOT IN ('system', 'information_schema', 'INFORMATION_SCHEMA') GROUP BY database FORMAT TabSeparated" </dev/null 2>/dev/null)
+    out=$(client --query "SELECT database, sum(bytes_on_disk) FROM system.parts WHERE active AND database NOT IN ('system', 'information_schema', 'INFORMATION_SCHEMA') GROUP BY database FORMAT TabSeparated" </dev/null 2>/dev/null)
     if [ -z "${out}" ]; then
         out=$(sudo docker exec "${CONTAINER}" sh -c '
             base=/var/lib/clickhouse; [ -d "$base/data" ] || base=/opt/clickhouse
