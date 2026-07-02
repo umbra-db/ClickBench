@@ -29,15 +29,17 @@ iops="${iops:-16000}"
 throughput="${throughput:-1000}"            # MB/s
 
 # Transient AWS errors that clear on their own: spare capacity frees as instances
-# drain, service quotas free as other benchmarks finish, and API throttling
-# (RequestLimitExceeded / Throttling) clears within seconds. A version sweep fires
+# drain, service quotas (vCPU/instance count, and the aggregate EBS storage quota that
+# raises VolumeLimitExceeded) free as other benchmarks finish and their volumes are
+# deleted, and API throttling (RequestLimitExceeded / Throttling) clears within
+# seconds. A version sweep fires
 # dozens of launches back-to-back and hits throttling far more than the single-shot
 # main launcher, so we retry those too. aws_retry also guards the pre-launch
 # describe-* calls — a throttled describe would blank arch/ami and make the launch
 # fail with a non-retryable error, silently skipping that version. Genuine config
 # errors (bad AMI, missing IAM perms, malformed user-data) don't match and fail
 # fast, so a broken invocation never loops forever.
-RETRY_RE='InsufficientInstanceCapacity|VcpuLimitExceeded|InstanceLimitExceeded|MaxSpotInstanceCountExceeded|RequestLimitExceeded|Throttling'
+RETRY_RE='InsufficientInstanceCapacity|VcpuLimitExceeded|InstanceLimitExceeded|MaxSpotInstanceCountExceeded|RequestLimitExceeded|Throttling|VolumeLimitExceeded'
 aws_retry() {
     local out rc
     while :; do
