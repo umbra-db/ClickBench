@@ -665,12 +665,19 @@ function renderSummary(filtered_data, baseline_data) {
     const noun_el = document.getElementById('metric-noun');
     if (noun_el) { noun_el.textContent = metric_noun; }
 
-    /// Both the summary chart and the details table are ordered by version date, latest
-    /// first (not by result). max_ratio still scales the horizon bars to the slowest.
+    /// Both the summary chart and the details table are ordered by version number, latest
+    /// first (not by result, and not by date -- versions released close together, or sharing
+    /// a calendar-version group date, still order deterministically). We compare the
+    /// server-reported actual_version (e.g. the 1.1.539xx/540xx tag builds), falling back to
+    /// the label, with numeric-aware comparison so 1.1.53974 < 1.1.54394 < 18.x < 26.6.
+    /// max_ratio still scales the horizon bars to the slowest.
     const sorted_indices = [...filtered_data.keys()].sort((a, b) => {
-        const da = filtered_data[a].release_date || '', db = filtered_data[b].release_date || '';
-        if (da != db) { return da < db ? 1 : -1; }
-        return filtered_data[b].version.localeCompare(filtered_data[a].version, undefined, { numeric: true });
+        const va = filtered_data[a].actual_version || filtered_data[a].version;
+        const vb = filtered_data[b].actual_version || filtered_data[b].version;
+        const c = vb.localeCompare(va, undefined, { numeric: true });
+        /// Several consecutive tag builds can report the same compiled-in revision (the
+        /// version wasn't bumped every commit), so break ties by the tag label.
+        return c != 0 ? c : filtered_data[b].version.localeCompare(filtered_data[a].version, undefined, { numeric: true });
     });
     const max_ratio = Math.max(...summaries.filter(x => x != null));
 
