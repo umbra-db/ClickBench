@@ -569,6 +569,22 @@ struct IntHash32
 };
 EOF
 fi
+# intHashCRC32 (CRC32C via SSE4.2) was added to Hash.h after 2014-12, but the
+# back-ported UniquesHashSet uses it. Append it when absent (identical to the later
+# definition). Matched on the definition, not the prose comment.
+if [ -f "$HASH_H" ] && ! grep -q 'intHashCRC32(' "$HASH_H"; then
+    cat >> "$HASH_H" <<'EOF'
+
+/// Added by reconstruct.sh: CRC32C-based UInt64 -> UInt64 hash (SSE4.2), added to
+/// this header after 2014-12; used by the back-ported UniquesHashSet.
+inline DB::UInt64 intHashCRC32(DB::UInt64 x)
+{
+	DB::UInt64 crc = -1ULL;
+	asm("crc32q %[x], %[crc]\n" : [crc] "+r" (crc) : [x] "rm" (x));
+	return crc;
+}
+EOF
+fi
 printf '#pragma once\n#include <DB/Common/HashTable/Hash.h>\n' > contrib/stats-compat/stats/IntHash.h
 
 # The overlaid 2015-12 ReservoirSampler{,Deterministic}.h back a small sample buffer
@@ -824,6 +840,15 @@ CWN=dbms/include/DB/Core/ColumnWithNameAndType.h
 if [ -f "$CWN" ] && [ ! -f dbms/include/DB/Core/ColumnWithTypeAndName.h ]; then
     printf '\nnamespace DB { using ColumnWithTypeAndName = ColumnWithNameAndType; }\n' >> "$CWN"
 fi
+
+# -- RegionsNames::SupportedLanguages -> Language: the region-name language enum was
+#    renamed (SupportedLanguages::Enum / ::RU -> Language / Language::RU); the methods
+#    getLanguageEnum() and getRegionName() kept their names. Rename the old references
+#    (regionToName in FunctionsDictionaries) to match the donor's RegionsNames. A
+#    no-op on 2015-01+, which no longer name the enum. --
+grep -rlZ 'RegionsNames::SupportedLanguages' dbms 2>/dev/null | while IFS= read -r -d '' f; do
+    sed -i 's#RegionsNames::SupportedLanguages::Enum#RegionsNames::Language#g; s#RegionsNames::SupportedLanguages::#RegionsNames::Language::#g' "$f"
+done
 
 # -- root CMakeLists: add the quicklz/re2_st include dirs and, on the C++ flags,
 #    -fpermissive plus the force-included cmath shim (anchored on the donor's
