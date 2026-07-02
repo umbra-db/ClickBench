@@ -632,6 +632,133 @@ namespace jsonxx
 }
 EOF
 
+# -- zookeeper/zookeeper.hh: pre-2014-07 zkutil is built on the C++ ZooKeeper client
+#    org::apache::zookeeper (a Yandex-internal package, never public; 2014-07 rewrote
+#    zkutil onto the C client). The benchmark uses plain MergeTree, never Replicated /
+#    ZooKeeper, so provide a compile-only stub of the C++ client API that zkutil and the
+#    replication code reference (enums, data::{Id,ACL,Stat}, Watch, Op::{Create,Remove,
+#    SetData}, OpResult, ZooKeeper). Methods return Ok / do nothing (never executed). --
+mkdir -p contrib/zkcpp-stub/zookeeper
+cat > contrib/zkcpp-stub/zookeeper/zookeeper.hh <<'EOF'
+#pragma once
+// Compile-only stub of the never-public org::apache::zookeeper C++ client (see
+// reconstruct.sh). Replication/ZooKeeper is never exercised by the benchmark.
+#include <string>
+#include <vector>
+#include <cstdint>
+#include <boost/shared_ptr.hpp>
+#include <boost/ptr_container/ptr_vector.hpp>
+
+namespace org { namespace apache { namespace zookeeper {
+
+namespace ReturnCode
+{
+    enum type { Ok = 0, NoNode, NodeExists, BadVersion, NotEmpty,
+                NoChildrenForEphemerals, SessionExpired, ConnectionLoss, RuntimeInconsistency, Error };
+    inline std::string toString(type) { return "ReturnCode"; }
+}
+namespace CreateMode
+{
+    enum type { Persistent = 0, Ephemeral = 1, PersistentSequential = 2, EphemeralSequential = 3 };
+}
+namespace SessionState
+{
+    enum type { Connecting = 0, Connected = 1, Expired = 2, AuthFailed = 3 };
+    inline std::string toString(type) { return "SessionState"; }
+}
+namespace WatchEvent
+{
+    enum type { None = 0, NodeCreated, NodeDeleted, NodeDataChanged, NodeChildrenChanged };
+    inline std::string toString(type) { return "WatchEvent"; }
+}
+namespace Permission
+{
+    enum type { Read = 1, Write = 2, Create = 4, Delete = 8, Admin = 16, All = 31 };
+}
+
+namespace data
+{
+    struct Id
+    {
+        std::string scheme, id;
+        std::string & getscheme() { return scheme; }
+        std::string & getid() { return id; }
+    };
+    struct ACL
+    {
+        Id id_; int perms = 0;
+        Id & getid() { return id_; }
+        void setperms(int p) { perms = p; }
+        int getperms() const { return perms; }
+    };
+    struct Stat
+    {
+        int64_t czxid = 0, mzxid = 0, pzxid = 0, ctime = 0, mtime = 0, ephemeralOwner = 0;
+        int32_t version = 0, cversion = 0, aversion = 0, dataLength = 0, numChildren = 0;
+        int64_t getczxid() const { return czxid; }
+        int32_t getversion() const { return version; }
+        int32_t getcversion() const { return cversion; }
+        int32_t getnumChildren() const { return numChildren; }
+    };
+}
+
+struct Watch
+{
+    virtual ~Watch() {}
+    virtual void process(WatchEvent::type, SessionState::type, const std::string &) = 0;
+};
+
+struct Op
+{
+    virtual ~Op() {}
+    struct Create; struct Remove; struct SetData; struct Check;
+};
+struct Op::Create : Op
+{
+    Create(const std::string &, const std::string &, const std::vector<data::ACL> &, CreateMode::type) {}
+};
+struct Op::Remove : Op
+{
+    Remove(const std::string &, int32_t) {}
+};
+struct Op::SetData : Op
+{
+    SetData(const std::string &, const std::string &, int32_t) {}
+};
+struct Op::Check : Op
+{
+    Check(const std::string &, int32_t) {}
+};
+
+struct OpResult
+{
+    virtual ~OpResult() {}   // polymorphic: consumers dynamic_cast to OpResult::Create
+    ReturnCode::type getReturnCode() const { return ReturnCode::Ok; }
+    std::string getPath() const { return {}; }
+    struct Create; struct Remove; struct SetData; struct Check;
+};
+struct OpResult::Create : OpResult { std::string getPathCreated() const { return {}; } };
+struct OpResult::Remove : OpResult {};
+struct OpResult::SetData : OpResult {};
+struct OpResult::Check : OpResult {};
+
+class ZooKeeper
+{
+public:
+    ReturnCode::type init(const std::string &, int32_t, boost::shared_ptr<Watch>) { return ReturnCode::Ok; }
+    ReturnCode::type close() { return ReturnCode::Ok; }
+    ReturnCode::type create(const std::string &, const std::string &, const std::vector<data::ACL> &, CreateMode::type, std::string &) { return ReturnCode::Ok; }
+    ReturnCode::type remove(const std::string &, int32_t) { return ReturnCode::Ok; }
+    ReturnCode::type exists(const std::string &, boost::shared_ptr<Watch>, data::Stat &) { return ReturnCode::Ok; }
+    ReturnCode::type get(const std::string &, boost::shared_ptr<Watch>, std::string &, data::Stat &) { return ReturnCode::Ok; }
+    ReturnCode::type getChildren(const std::string &, boost::shared_ptr<Watch>, std::vector<std::string> &, data::Stat &) { return ReturnCode::Ok; }
+    ReturnCode::type set(const std::string &, const std::string &, int32_t, data::Stat &) { return ReturnCode::Ok; }
+    ReturnCode::type multi(const boost::ptr_vector<Op> &, boost::ptr_vector<OpResult> &) { return ReturnCode::Ok; }
+};
+
+}}}
+EOF
+
 # -- stats/*: the pre-2015-12 trees include several headers from an external Yandex
 #    "stats" library that was never open-sourced. At the 2015-11 -> 2015-12 boundary
 #    these were inlined into the repo (a coordinated refactor). We reproduce that:
@@ -838,6 +965,13 @@ fi
 SRV=dbms/src/Server/Server.cpp
 [ -f "$SRV" ] && sed -i 's#\[::\]:#0.0.0.0:#g' "$SRV"
 
+# -- Poco::FileOutputStream: pre-2014-07 InterpreterAlterQuery uses it without
+#    including <Poco/FileStream.h> (it came in transitively then, not with the donor
+#    Poco). Add the include when the file references it but lacks the include. --
+IAQ=dbms/src/Interpreters/InterpreterAlterQuery.cpp
+[ -f "$IAQ" ] && grep -q 'Poco::FileOutputStream' "$IAQ" && ! grep -q 'Poco/FileStream.h' "$IAQ" \
+    && sed -i '1i #include <Poco/FileStream.h>' "$IAQ"
+
 # -- uniq on Float32/Float64 (pre-2015-09): AggregateFunctionUniq{HLL12,Combined}Data
 #    typedef their HyperLogLog / CombinedCardinalityEstimator Set over the raw column
 #    type T, so uniq(Float) instantiates the HLL on `float`. But OneAdder inserts the
@@ -979,7 +1113,7 @@ done
 # -- root CMakeLists: add the quicklz/re2_st include dirs and, on the C++ flags,
 #    -fpermissive plus the force-included cmath shim (anchored on the donor's
 #    stable libcityhash include line / -std=gnu++1y flag) --
-sed -i 's#include_directories (${METRICA_SOURCE_DIR}/contrib/libcityhash/)#include_directories (${METRICA_SOURCE_DIR}/contrib/quicklz-stub/)\ninclude_directories (${METRICA_SOURCE_DIR}/contrib/re2_st_gen/)\ninclude_directories (${METRICA_SOURCE_DIR}/contrib/statdaemons-compat/)\ninclude_directories (${METRICA_SOURCE_DIR}/contrib/yandex-compat/)\ninclude_directories (${METRICA_SOURCE_DIR}/contrib/dc-compat/)\ninclude_directories (${METRICA_SOURCE_DIR}/contrib/stats-compat/)\ninclude_directories (${METRICA_SOURCE_DIR}/contrib/strconvert-compat/)\ninclude_directories (${METRICA_SOURCE_DIR}/contrib/jsonxx-compat/)\ninclude_directories (${METRICA_SOURCE_DIR}/contrib/libcityhash/)#' CMakeLists.txt
+sed -i 's#include_directories (${METRICA_SOURCE_DIR}/contrib/libcityhash/)#include_directories (${METRICA_SOURCE_DIR}/contrib/quicklz-stub/)\ninclude_directories (${METRICA_SOURCE_DIR}/contrib/re2_st_gen/)\ninclude_directories (${METRICA_SOURCE_DIR}/contrib/statdaemons-compat/)\ninclude_directories (${METRICA_SOURCE_DIR}/contrib/yandex-compat/)\ninclude_directories (${METRICA_SOURCE_DIR}/contrib/dc-compat/)\ninclude_directories (${METRICA_SOURCE_DIR}/contrib/stats-compat/)\ninclude_directories (${METRICA_SOURCE_DIR}/contrib/strconvert-compat/)\ninclude_directories (${METRICA_SOURCE_DIR}/contrib/jsonxx-compat/)\ninclude_directories (${METRICA_SOURCE_DIR}/contrib/zkcpp-stub/)\ninclude_directories (${METRICA_SOURCE_DIR}/contrib/libcityhash/)#' CMakeLists.txt
 # Force-include a few standard headers: on this (trusty) toolchain they aren't
 # pulled in transitively the way the newer 16.04/boost-1.58 headers were, so code
 # that assumes std::accumulate (<numeric>) / std::mt19937 (<random>) is in scope
