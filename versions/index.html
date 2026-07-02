@@ -745,7 +745,7 @@ function renderSummary(filtered_data, baseline_data) {
         td_number.appendChild(document.createTextNode(value_text(idx)));
 
         /// Horizon (multi-scale) bar, ported from the main ClickBench page: the same
-        /// value is drawn at 1×, 4×, 16×, 64× zoom in four colour bands, so small
+        /// value is drawn at 1×, 2×, 4×, 8× zoom in four colour bands, so small
         /// differences near the fast end stay visible across a wide dynamic range.
         const percentage = (ratio != null && isFinite(max_ratio) && max_ratio > 0) ? ratio / max_ratio * 100 : 0;
         let td_bar = document.createElement('td');
@@ -760,12 +760,12 @@ function renderSummary(filtered_data, baseline_data) {
                 var(--bar-color1) 0%,
                 var(--bar-color1) ${Math.min(100, percentage)}%,
                 var(--bar-color2) ${Math.min(100, percentage)}%,
-                var(--bar-color2) ${Math.min(100, percentage * 4)}%,
+                var(--bar-color2) ${Math.min(100, percentage * 2)}%,
+                var(--bar-color3) ${Math.min(100, percentage * 2)}%,
                 var(--bar-color3) ${Math.min(100, percentage * 4)}%,
-                var(--bar-color3) ${Math.min(100, percentage * 16)}%,
-                var(--bar-color4) ${Math.min(100, percentage * 16)}%,
-                var(--bar-color4) ${Math.min(100, percentage * 64)}%,
-                transparent ${Math.min(100, percentage * 64)}%,
+                var(--bar-color4) ${Math.min(100, percentage * 4)}%,
+                var(--bar-color4) ${Math.min(100, percentage * 8)}%,
+                transparent ${Math.min(100, percentage * 8)}%,
                 transparent 100%)`;
         }
         td_bar.appendChild(bar);
@@ -1084,7 +1084,7 @@ if (window.location.hash) {
 }
 
 document.getElementById('scale_hint').textContent =
-    'Different colors on the bar chart represent the same values shown at different scales (1x, 4x, 16x, 64x zoom).';
+    'Different colors on the bar chart represent the same values shown at different scales (1x, 2x, 4x, 8x zoom).';
 
 render();
 updateSelectors();
