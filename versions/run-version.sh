@@ -114,6 +114,9 @@ ensure_built_image() {
     fi
     sha="$(awk -F'\t' -v v="${VERSION}" '$1==v{print $2; exit}' "${bfs}/monthly.tsv" 2>/dev/null)"
     if [ -n "${sha}" ]; then
+        # The revision is derived from the snapshot's own source (max
+        # DBMS_MIN_REVISION_WITH_* in Core/Defines.h) inside Dockerfile.reconstruct, so
+        # each build reports its authentic era revision as 0.0.<rev>; nothing to pass here.
         echo "reconstructing ${IMAGE} from source (commit ${sha})" >&2
         sudo docker buildx build --progress=plain --load --build-arg "TAG=${sha}" \
             -t "${IMAGE}" -f "${bfs}/Dockerfile.reconstruct" "${bfs}" >&2
@@ -426,15 +429,44 @@ emit_data_size_json() {
     printf '%s' "${out}" | awk -F'\t' 'BEGIN{printf "{"} NF>=2 && $2!=""{printf "%s\"%s\": %s",(n++?", ":""),$1,$2} END{printf "}"}'
 }
 
+# Release date of this version, for the result JSON. list-versions.sh already
+# resolves it (column 3) from the authoritative version_date.tsv for published and
+# tagged source builds; the reconstructed monthly snapshots aren't in that list, so
+# fall back to their commit date in monthly.tsv (column 3).
+release_date() {
+    local d
+    d=$(./list-versions.sh 2>/dev/null | awk -F'\t' -v v="${VERSION}" '$1==v{print $3; exit}')
+    [ -z "${d}" ] && d=$(awk -F'\t' -v v="${VERSION}" '$1==v{print $3; exit}' "${HERE}/build-from-source/monthly.tsv" 2>/dev/null)
+    printf '%s' "${d}"
+}
+
+# Version string as reported by the running server. SELECT version() works from
+# ~2015-07 on and returns 0.0.<revision> for the pre-release source builds (e.g.
+# 0.0.53975). The oldest prehistoric builds have no version() function at all, so
+# fall back to 0.0.<revision> using the revision compiled into the reconstructed
+# image (baked at /clickhouse-revision by Dockerfile.reconstruct) -- which is exactly
+# what those servers report in their TCP handshake.
+server_version() {
+    local v rev
+    v=$(client --query "SELECT version()" 2>/dev/null | tr -d '\r')
+    if [ -z "${v}" ]; then
+        rev=$(sudo docker exec "${CONTAINER}" cat /clickhouse-revision 2>/dev/null | tr -d '\r\n ')
+        [ -n "${rev}" ] && v="0.0.${rev}"
+    fi
+    printf '%s' "${v}"
+}
+
 # Time every query and write results/<version>.json.
 run_benchmark() {
-    local ACTUAL ds query FIRST=1 qnum=0 row QDB MINVERS mv lidx
-    ACTUAL=$(client --query "SELECT version()" 2>/dev/null | tr -d '\r')
-    echo "benchmarking ${VERSION} (server reports ${ACTUAL})" >&2
+    local ACTUAL RELEASE ds query FIRST=1 qnum=0 row QDB MINVERS mv lidx
+    ACTUAL=$(server_version)
+    RELEASE=$(release_date)
+    echo "benchmarking ${VERSION} (server reports ${ACTUAL:-unknown}, released ${RELEASE:-unknown})" >&2
     {
         echo '{'
         echo "    \"version\": \"${VERSION}\","
         echo "    \"actual_version\": \"${ACTUAL}\","
+        echo "    \"release_date\": \"${RELEASE}\","
         echo "    \"load_time\": $(emit_load_time_json),"
         echo "    \"data_size\": $(emit_data_size_json),"
         echo '    "result":'

@@ -88,6 +88,17 @@ RUN bash /reconstruct.sh
 # Configure, then build. re2/re2_st must be built (and put on the linker search
 # path) before the server links; revision.h is generated directly (the donor's
 # generator does a git-fetch that hangs on a shallow checkout).
+#
+# Revision: derive the authentic era revision from the source itself -- the maximum of
+# the DBMS_MIN_REVISION_WITH_* feature-gate constants in Core/Defines.h. Those are real
+# SVN revisions (the newest feature this snapshot carries landed at that revision, i.e.
+# ~= the snapshot's own revision), so it is era-ordered and, being >= every threshold
+# the in-image client checks at handshake, keeps client and server compatible (a lower,
+# "more authentic" number like 0.0.34172 makes the client reject its own server:
+# "Server revision is too old ... at least 34482"). The compiled-in value is what the
+# server reports (0.0.<rev>); it is also written to /clickhouse-revision so
+# run-version.sh can report the same value on the oldest builds, which have no SELECT
+# version(). Falls back to the REVISION build-arg if no constants are found.
 ARG REVISION=53400
 WORKDIR /src/build
 RUN cmake .. -DCMAKE_BUILD_TYPE=Release -DTESTS=NO \
@@ -96,7 +107,11 @@ RUN cmake .. -DCMAKE_BUILD_TYPE=Release -DTESTS=NO \
  && cp "$(find . -name libre2.a | head -1)" /usr/lib/ \
  && cp "$(find . -name libre2_st.a | head -1)" /usr/lib/ \
  && mkdir -p /src/build/libs/libcommon/src \
- && printf '#ifndef REVISION\n#define REVISION %s\n#endif\n#ifndef SVN_REVISION\n#define SVN_REVISION %s\n#endif\n' "${REVISION}" "${REVISION}" > /src/build/libs/libcommon/src/revision.h \
+ && { REV=$(grep -hoE 'DBMS_MIN_REVISION_WITH_[A-Z_]+[[:space:]]+[0-9]+' $(find /src -path '*/Core/Defines.h' 2>/dev/null) 2>/dev/null | grep -oE '[0-9]+$' | sort -n | tail -1); \
+      REV=${REV:-${REVISION}}; \
+      echo "reconstruct: using revision ${REV}"; \
+      printf '%s' "${REV}" > /clickhouse-revision; \
+      printf '#ifndef REVISION\n#define REVISION %s\n#endif\n#ifndef SVN_REVISION\n#define SVN_REVISION %s\n#endif\n' "${REV}" "${REV}" > /src/build/libs/libcommon/src/revision.h; } \
  && make -j"$(nproc)" clickhouse-server && make -j"$(nproc)" clickhouse-client
 
 # Install binaries + a multi-call shim + a minimal IPv4 config (this era ships
