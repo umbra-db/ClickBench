@@ -24,6 +24,9 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DATA="${DATA:-${HERE}/prepare-data/data}"
 TRIES="${TRIES:-6}"   # 1 cold + 5 hot runs
 MEM=100000000000   # 100G per-query memory limit
+# How many datasets to load concurrently. Loading all of them at once can OOM-kill
+# the server (and thus stop the container) on memory-hungry old versions; see load_data.
+LOAD_PARALLEL="${LOAD_PARALLEL:-4}"
 # Datasets to actually load. Queries for any skipped dataset still run (and
 # report null). E.g. LOAD_DATASETS="hits ssb mgbench" skips the big taxi load
 # while keeping its file on disk.
@@ -177,13 +180,19 @@ start_server() {
 # Load one dataset: create its database and (create+load) each of its tables.
 # Tables that fail to create/load are left absent so their queries report null.
 load_one_dataset() {
-    local ds="$1" pair table file ddl t0 reader
+    local ds="$1" pair table file ddl t0 reader cnt
     # Each dataset lives in its own database so same-named tables (e.g. TPC-H
     # and TPC-DS `customer`) don't clash.
     client --query "CREATE DATABASE IF NOT EXISTS ${ds}" </dev/null 2>/dev/null
     for pair in ${TABLES[$ds]}; do
         table="${pair%%:*}"; file="${pair##*:}"
         [ -f "${DATA}/${file}" ] || { echo "SKIP ${ds}.${table}: ${file} not present"; continue; }
+        # Already loaded (a previous pass)? Skip, so the retry pass below only reloads
+        # the tables that are actually missing rather than dropping and redoing them.
+        if [ "$(client --database "${ds}" --query "EXISTS TABLE ${table}" 2>/dev/null | tr -d '\r')" = "1" ]; then
+            cnt="$(client --database "${ds}" --query "SELECT count() FROM ${table}" 2>/dev/null | tr -d '\r')"
+            [ -n "${cnt}" ] && [ "${cnt}" != "0" ] && { echo "already loaded ${ds}.${table} (${cnt} rows), skipping"; continue; }
+        fi
         ddl="$("${HERE}/create/create.sh" "${VERSION}" "${ds}" "${table}")"
         echo "=== CREATE ${ds}.${table} on ${VERSION} ==="
         echo "${ddl}"
@@ -215,21 +224,60 @@ load_one_dataset() {
     done
 }
 
-# Load all datasets in parallel: each dataset (database + its tables) loads in
-# its own background job, so the many INSERTs run concurrently against the
-# server. Per-table pv progress lines interleave but stay labelled ds.table.
+# True if every table of this dataset whose source file is present exists on the server.
+dataset_loaded() {
+    local ds="$1" pair table file
+    for pair in ${TABLES[$ds]}; do
+        table="${pair%%:*}"; file="${pair##*:}"
+        [ -f "${DATA}/${file}" ] || continue
+        [ "$(client --database "${ds}" --query "EXISTS TABLE ${table}" 2>/dev/null | tr -d '\r')" = "1" ] || return 1
+    done
+    return 0
+}
+
+# Load the datasets, at most LOAD_PARALLEL at a time. Loading every dataset at once
+# (10 background jobs, several of them multi-GB tables) can exhaust RAM on the older,
+# less memory-efficient versions; earlyoom then kills clickhouse-server, and since it
+# is the container's PID 1 the whole container stops, failing every in-flight load
+# (that is exactly what corrupted 18.10.3's run). Bounding the concurrency keeps peak
+# memory in check; a revive-and-retry pass then reloads anything that still failed,
+# sequentially, so a transient death doesn't leave the dataset permanently missing.
 load_data() {
-    local ds pids=()
+    local ds pids=() active=0 to_load=() attempt missing
     : > "${LOAD_STATS}"   # fresh per run; per-table load times accumulate here
     for ds in ${LOAD_DATASETS}; do
         if ! dataset_supported "${ds}"; then
             echo "=== skipping load of ${ds}: no query supported on ${VERSION} (all below min version) ===" >&2
             continue
         fi
+        to_load+=("${ds}")
+    done
+
+    for ds in "${to_load[@]}"; do
         load_one_dataset "${ds}" &
         pids+=("$!")
+        active=$((active + 1))
+        if [ "${active}" -ge "${LOAD_PARALLEL}" ]; then
+            wait -n 2>/dev/null || wait "${pids[@]}"   # a slot frees when any job finishes
+            active=$((active - 1))
+        fi
     done
-    [ "${#pids[@]}" -gt 0 ] && wait "${pids[@]}"
+    wait
+
+    # Retry pass: revive the server if it died and reload any dataset that is not fully
+    # present, one at a time. load_one_dataset skips tables that already loaded, so this
+    # only redoes the missing ones.
+    for attempt in 1 2; do
+        server_alive || revive_server || break
+        missing=()
+        for ds in "${to_load[@]}"; do dataset_loaded "${ds}" || missing+=("${ds}"); done
+        [ "${#missing[@]}" -eq 0 ] && break
+        echo "=== load retry ${attempt}: reloading sequentially: ${missing[*]} ===" >&2
+        for ds in "${missing[@]}"; do
+            server_alive || revive_server || break
+            load_one_dataset "${ds}"
+        done
+    done
     echo "=== all dataset loads finished ==="
 }
 
