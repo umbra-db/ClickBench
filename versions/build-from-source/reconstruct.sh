@@ -77,6 +77,15 @@ if os.path.exists(f):
     s = re.sub(r"add_library\s*\(\s*mysqlxx\b.*?\)",
                "file(GLOB mysqlxx_src src/*.cpp)\nadd_library(mysqlxx ${mysqlxx_src})",
                s, count=1, flags=re.S)
+    # The donor CMakeLists has a POST_BUILD step running libmysqlxx/patch.sh to patch
+    # the bundled mysqlclient. Newer target trees ship that script, but the oldest
+    # (pre-2014) don't -- and the overlay only brings CMakeLists/.cmake, not patch.sh,
+    # so the command fails with "not found" (Error 127). We link the *system*
+    # libmysqlclient and never touch MySQL in the benchmark, so when the script is
+    # absent just drop the custom command. Guarded on patch.sh existence -> no-op on
+    # trees that ship it (they keep patching, as before).
+    if not os.path.exists("libs/libmysqlxx/patch.sh"):
+        s = re.sub(r"ADD_CUSTOM_COMMAND\s*\([^)]*patch\.sh[^)]*\)", "", s, flags=re.I|re.S)
     wr(f, s)
 
 # Drop the (never-vendored) mongoclient link name wherever it appears.
