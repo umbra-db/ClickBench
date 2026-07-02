@@ -961,6 +961,11 @@ inline DB::UInt32 intHash32(DB::UInt64 key)
 	return key;
 }
 
+// The 2012 HashMap.h calls the older two-template-arg form intHash32<T, salt>(key);
+// forward it to the salt-only form. (intHash32<0>(x) still binds the one above.)
+template <typename T, DB::UInt64 salt>
+inline DB::UInt32 intHash32(T key) { return intHash32<salt>(static_cast<DB::UInt64>(key)); }
+
 template <typename T, DB::UInt64 salt = 0>
 struct IntHash32 { size_t operator() (const T & key) const { return intHash32<salt>(key); } };
 
