@@ -501,7 +501,21 @@ EOF
     rm -f libs/libdaemon/src/*.cpp
     printf '// minimal daemon base (see reconstruct.sh)\n' > libs/libdaemon/src/BaseDaemon.cpp
 fi
-echo '#pragma once' > contrib/statdaemons-compat/statdaemons/Interests.h
+# statdaemons/Interests.h: the never-public header of interest-category bit flags that
+# the pre-2014 legacy OLAP handler (dbms/src/Server/OLAPAttributesMetadata.h) masks
+# against. The OLAP HTTP interface is dead code for the benchmark, so the exact bit
+# values are immaterial -- distinct flags are enough to compile. Unscoped enum at global
+# scope so the enumerators are visible unqualified, as the original was.
+cat > contrib/statdaemons-compat/statdaemons/Interests.h <<'EOF'
+#pragma once
+enum Interests
+{
+    PHOTO = 1 << 0, MOVIE_PREMIERES = 1 << 1, TOURISM = 1 << 2, FAMILY_AND_CHILDREN = 1 << 3,
+    FINANCE = 1 << 4, B2B = 1 << 5, CARS = 1 << 6, MOBILE_AND_INTERNET_COMMUNICATIONS = 1 << 7,
+    BUILDING = 1 << 8, CULINARY = 1 << 9, ESTATE = 1 << 10, HEALTHY_LIFESTYLE = 1 << 11,
+    LITERATURE = 1 << 12, SOFTWARE = 1 << 13
+};
+EOF
 # CategoriesHierarchy: a Metrica embedded dictionary the donor dropped (so the
 # auto-map can't forward it). The benchmark never loads category dictionaries, so a
 # no-op stub with the small interface Dictionaries.h / FunctionsDictionaries.h use is
@@ -1124,6 +1138,19 @@ fi
 SRV=dbms/src/Server/Server.cpp
 [ -f "$SRV" ] && sed -i 's#\[::\]:#0.0.0.0:#g' "$SRV"
 
+# -- init.d / logrotate INCLUDEs: the donor Server/CMakeLists.txt INCLUDEs the cmake
+#    fragments tools/init.d/CMakeLists.init and tools/logrotate/CMakeLists.logrotate.
+#    Those are neither CMakeLists.txt nor .cmake, so the overlay doesn't bring them, and
+#    the oldest trees don't ship them at all -- cmake then fails ("include could not
+#    find load file"). They only add init.d/logrotate packaging, irrelevant to building
+#    the server binary, so drop the INCLUDE lines when the fragment is absent. No-op on
+#    trees that do ship the fragments. --
+SRV_CML=dbms/src/Server/CMakeLists.txt
+if [ -f "$SRV_CML" ]; then
+    [ -f tools/init.d/CMakeLists.init ] || sed -i '/INCLUDE[[:space:]]*(.*tools\/init\.d\/CMakeLists\.init)/d' "$SRV_CML"
+    [ -f tools/logrotate/CMakeLists.logrotate ] || sed -i '/INCLUDE[[:space:]]*(.*tools\/logrotate\/CMakeLists\.logrotate)/d' "$SRV_CML"
+fi
+
 # -- Poco::FileOutputStream: pre-2014-07 InterpreterAlterQuery uses it without
 #    including <Poco/FileStream.h> (it came in transitively then, not with the donor
 #    Poco). Add the include when the file references it but lacks the include. --
@@ -1299,6 +1326,19 @@ if m:
     s = s[:i] + '\npublic:\n\tvoid sync() { next(); }\n' + s[i:]
     open(p, 'w', encoding='utf-8', errors='surrogateescape').write(s)
 PYEOF
+fi
+
+# -- DB::toString (pre-2014): the back-ported Embedded dictionaries (RegionsHierarchy.h)
+#    call DB::toString, a WriteHelpers helper added later. Append the same template the
+#    donor defines (WriteBufferFromString + writeText) when this era's WriteHelpers.h
+#    lacks it. This era's WriteBufferFromString.h doesn't include WriteHelpers.h, so
+#    there is no circular include. No-op once toString is present. --
+WH=dbms/include/DB/IO/WriteHelpers.h
+if [ -f "$WH" ] && ! grep -q 'String toString' "$WH"; then
+    {
+        printf '\n#include <DB/IO/WriteBufferFromString.h>\n'
+        printf 'namespace DB { template <typename T> inline std::string toString(const T & x) { std::string res; { WriteBufferFromString buf(res); writeText(x, buf); } return res; } }\n'
+    } >> "$WH"
 fi
 
 # -- ColumnWithNameAndType -> ColumnWithTypeAndName: the struct was renamed after
