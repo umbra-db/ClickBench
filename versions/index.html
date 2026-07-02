@@ -478,8 +478,8 @@ datasets.map(d => {
 });
 document.getElementById('select-all-datasets').addEventListener('click', e => toggleAll(e, selectors.dataset));
 
-document.getElementById('selector-metric-cold').addEventListener('click', e => { selectors.metric = 'cold'; render(); updateHistory(); });
-document.getElementById('selector-metric-hot').addEventListener('click', e => { selectors.metric = 'hot'; render(); updateHistory(); });
+document.getElementById('selector-metric-cold').addEventListener('click', e => { selectors.metric = 'cold'; updateSelectors(); render(); updateHistory(); });
+document.getElementById('selector-metric-hot').addEventListener('click', e => { selectors.metric = 'hot'; updateSelectors(); render(); updateHistory(); });
 
 if (!selectors.queries.length) { selectors.queries = query_meta.map(() => true); }
 
