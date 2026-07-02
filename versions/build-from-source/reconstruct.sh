@@ -240,7 +240,17 @@ EOF
     # DB/Common path to it (only when the tree has no real DB/Common/Exception.h).
     if [ ! -e dbms/include/DB/Common/Exception.h ]; then
         mkdir -p dbms/include/DB/Common
-        printf '#pragma once\n#include <DB/Core/Exception.h>\n' > dbms/include/DB/Common/Exception.h
+        {
+            printf '#pragma once\n#include <DB/Core/Exception.h>\n'
+            # tryLogCurrentException(Poco::Logger *) overload was added after 2015-03;
+            # the back-ported ErrorHandlers.h calls it. Provide it (forwarding to the
+            # era's name-based overload) only when the tree lacks it, so it doesn't
+            # clash on 2015-04+ which already declare it.
+            if ! grep -q 'tryLogCurrentException(Poco::Logger' dbms/include/DB/Core/Exception.h 2>/dev/null; then
+                printf '#include <Poco/Logger.h>\n'
+                printf 'namespace DB { inline void tryLogCurrentException(Poco::Logger * logger, const std::string & = "") { tryLogCurrentException(logger ? logger->name().c_str() : ""); } }\n'
+            fi
+        } > dbms/include/DB/Common/Exception.h
     fi
 fi
 # The back-ported SummingSortedBlockInputStream.h includes <DB/Core/FieldVisitors.h>;
@@ -286,8 +296,11 @@ public:
     using NestedPoolPtr = Poco::SharedPtr<TNestedPool>;
     using Entry = typename TNestedPool::Entry;
 
+    // The element carries priority both directly (.priority, ~2015-03 era) and nested
+    // (.state.priority, ~2015-06 era) so either era's ConnectionPoolWithFailover
+    // compiles. get()/getMany() throw, so the value is never actually consulted.
     struct PoolState { std::size_t priority = 0; };
-    struct PoolWithState { NestedPoolPtr pool; PoolState state; };
+    struct PoolWithState { NestedPoolPtr pool; PoolState state; std::size_t priority = 0; };
     using NestedPools = std::vector<NestedPoolPtr>;
 
     PoolWithFailoverBase(NestedPools & nested_pools_, std::size_t max_tries_,
