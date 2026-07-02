@@ -798,13 +798,15 @@ function render() {
     });
 
     const enabled_datasets = datasets.filter(d => selectors.dataset[d.name]);
-    const label_span = sorted_indices.length + 1;   // name cell spans the label + version columns
 
     /// A separator/header row: a checkbox in column 1 (so the Total and per-dataset
     /// checkboxes line up vertically) and a name spanning the rest of the row.
     function separatorRow(name, checked, onToggle) {
         let tr = document.createElement('tr');
         tr.className = 'dataset-header';
+        /// Checkbox in the sticky column 1 (same position as the per-query checkboxes),
+        /// name in the sticky column 2 (same position as the query numbers) so both stay
+        /// pinned to the left; a separate non-sticky band cell spans the version columns.
         let td_check = document.createElement('td');
         let cb = document.createElement('input');
         cb.type = 'checkbox';
@@ -813,12 +815,14 @@ function render() {
         td_check.appendChild(cb);
         tr.appendChild(td_check);
         let td_name = document.createElement('td');
-        td_name.colSpan = label_span;
         let nm = document.createElement('span');
         nm.className = 'dataset-name';
         nm.appendChild(document.createTextNode(name));
         td_name.appendChild(nm);
         tr.appendChild(td_name);
+        let td_band = document.createElement('td');
+        td_band.colSpan = sorted_indices.length;
+        tr.appendChild(td_band);
         details_body.appendChild(tr);
     }
 
