@@ -21,8 +21,26 @@ mkdir -p results
 # builds from the authoritative version_date.tsv; the reconstructed monthly snapshots are
 # not in that list, so fall back to their commit date in build-from-source/monthly.tsv.
 LV="$(./list-versions.sh 2>/dev/null || true)"
+
+# For calendar versions (18.x onwards) the page groups by YY.MM (major.minor). Use the
+# date of the FIRST release in that YY.MM line so the group sorts/displays by when the
+# release series began, not by the latest patch. GROUP_FIRST maps "YY.MM" -> earliest
+# date, computed from the full release list in version_date.tsv.
+VD="prepare-data/data/version_date.tsv"
+declare -A GROUP_FIRST
+if [ -s "${VD}" ]; then
+    while IFS=$'\t' read -r mm d; do GROUP_FIRST["${mm}"]="${d}"; done < <(
+        awk -F'\t' '{ v=$1; sub(/^v/,"",v); n=split(v,a,".");
+            if (n>=2) { k=a[1]"."a[2]; if (!(k in m) || $2 < m[k]) m[k]=$2 } }
+            END { for (k in m) print k"\t"m[k] }' "${VD}")
+fi
+
 reldate() {
-    local v="$1" d
+    local v="$1" d mm
+    if [[ "${v}" =~ ^([0-9]+)\.([0-9]+)\. ]] && [ "${BASH_REMATCH[1]}" -ge 18 ]; then
+        mm="${BASH_REMATCH[1]}.${BASH_REMATCH[2]}"
+        [ -n "${GROUP_FIRST[$mm]:-}" ] && { printf '%s' "${GROUP_FIRST[$mm]}"; return; }
+    fi
     d="$(awk -F'\t' -v v="$v" '$1==v{print $3; exit}' <<<"${LV}")"
     [ -z "${d}" ] && d="$(awk -F'\t' -v v="$v" '$1==v{print $3; exit}' build-from-source/monthly.tsv 2>/dev/null)"
     printf '%s' "${d}"

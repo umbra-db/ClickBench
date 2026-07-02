@@ -82,7 +82,7 @@
 
         body {
             font-family: 'Inter', sans-serif;
-            padding: 1% 3% 0 3%;
+            padding: 0 3% 0 0;   /* no top/left padding: sticky header and left columns pin to the page edge */
         }
 
         h1 {
@@ -236,6 +236,12 @@
             z-index: 2;
         }
 
+        #details th .th-date {
+            font-size: 78%;
+            font-weight: normal;
+            opacity: 0.55;
+        }
+
         /* Keep the two left columns (checkbox + query number / label) pinned to the
            left, and the version/date header row pinned to the top, while scrolling the
            wide table. The top-left corner cells need the highest z-index. */
@@ -253,11 +259,13 @@
             min-width: 2.5rem;
         }
         #details td:nth-child(2), #details th:nth-child(2) {
-            left: 2.5rem;
+            left: var(--qn-left, 2.5rem);   /* set to column 1's real width in render() */
         }
-        /* Preserve the dataset-header band colour on the sticky left cells. */
+        /* Preserve the dataset-header band colour on the sticky left cells, and left-align
+           the dataset name (overriding the right-aligned #details td default). */
         #details tr.dataset-header td {
             background-color: rgba(128, 128, 128, 0.18);
+            text-align: left;
         }
 
         #details td {
@@ -398,6 +406,8 @@
         <td id="selectors_run">
             <a class="selector" id="selector-metric-cold">Cold Run</a>
             <a class="selector" id="selector-metric-hot">Hot Run</a>
+            <a class="selector" id="selector-metric-load">Load Time</a>
+            <a class="selector" id="selector-metric-size">Data Size</a>
         </td>
     </tr>
 </table>
@@ -409,7 +419,7 @@
                 version
             </th>
             <th colspan="2">
-                Relative time (lower is better).<br/>
+                Relative <span id="metric-noun">query time</span> (lower is better).<br/>
                 <span id="scale_hint"></span>
             </th>
         </tr>
@@ -472,8 +482,16 @@ function setTheme(new_theme) {
 document.getElementById('toggle-light').addEventListener('click', e => setTheme('light'));
 document.getElementById('toggle-dark').addEventListener('click', e => setTheme('dark'));
 
+/// Initial theme: an explicit stored choice wins; otherwise follow the OS preference.
+/// Set the attribute directly here (no render() — the initial render runs at the end).
 let stored_theme = window.localStorage.getItem('theme');
-if (stored_theme && stored_theme != theme) { setTheme(stored_theme); }
+if (!stored_theme && window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) {
+    stored_theme = 'dark';
+}
+if (stored_theme) {
+    theme = stored_theme;
+    document.documentElement.setAttribute('data-theme', theme);
+}
 
 /// Selectors
 
@@ -532,6 +550,8 @@ document.getElementById('select-all-datasets').addEventListener('click', e => to
 
 document.getElementById('selector-metric-cold').addEventListener('click', e => { selectors.metric = 'cold'; updateSelectors(); render(); updateHistory(); });
 document.getElementById('selector-metric-hot').addEventListener('click', e => { selectors.metric = 'hot'; updateSelectors(); render(); updateHistory(); });
+document.getElementById('selector-metric-load').addEventListener('click', e => { selectors.metric = 'load'; updateSelectors(); render(); updateHistory(); });
+document.getElementById('selector-metric-size').addEventListener('click', e => { selectors.metric = 'size'; updateSelectors(); render(); updateHistory(); });
 
 if (!selectors.queries.length) { selectors.queries = query_meta.map(() => true); }
 
@@ -587,28 +607,49 @@ function renderSummary(filtered_data, baseline_data) {
     let table = document.getElementById('summary');
     clearElement(table);
 
-    /// For each query: if there is a result, ratio = (10ms + duration) / (10ms + baseline);
-    /// if not, penalise with 2× the worst timing of that version. Geometric mean across
-    /// the enabled queries (dataset on + query checkbox on).
+    const enabled_datasets = datasets.filter(d => selectors.dataset[d.name]);
     const any_enabled = [...Array(num_queries).keys()].some(queryEnabled);
 
-    let summaries = filtered_data.map(elem => {
-        const all_timings = elem.result.map(selectRun).filter(x => x !== null);
-        /// An absent (failed / unsupported) result counts as 2× this version's own worst
-        /// query time; if the version produced no result at all, fall back to a constant.
-        const fallback_timing = all_timings.length ? missing_result_penalty * Math.max(...all_timings) : missing_result_time;
-        let accumulator = 0, used = 0;
-        for (let i = 0; i < num_queries; ++i) {
-            if (!any_enabled || queryEnabled(i)) {
-                const curr = selectRun(elem.result[i]) ?? fallback_timing;
-                const base = selectRun(baseline_data[i]);
-                if (base === null) { continue; }
-                accumulator += Math.log((constant_time_add + curr) / (constant_time_add + base));
-                ++used;
+    /// summaries[idx] = ratio (lower is better) used for the bar; value_text(idx) is the
+    /// number-cell label; metric_noun labels the column heading.
+    let summaries, value_text, metric_noun;
+
+    if (selectors.metric === 'load' || selectors.metric === 'size') {
+        /// Rank by total load time / data size over the enabled datasets. A version
+        /// missing any enabled dataset has no comparable total, so it shows "—".
+        const key = selectors.metric === 'load' ? 'load_time' : 'data_size';
+        const fmt = selectors.metric === 'load' ? formatTime : formatSize;
+        metric_noun = selectors.metric === 'load' ? 'load time' : 'data size';
+        const totals = filtered_data.map(e =>
+            (e[key] && e.load_time && enabled_datasets.every(d => e.load_time[d.name] != null))
+                ? enabled_datasets.reduce((s, d) => s + (e[key][d.name] ?? 0), 0) : null);
+        const min = Math.min(...totals.filter(x => x != null && x > 0));
+        summaries = totals.map(t => (t != null && isFinite(min) && min > 0) ? t / min : null);
+        value_text = idx => totals[idx] == null ? '—' : `${fmt(totals[idx])} (×${summaries[idx].toFixed(2)})`;
+    } else {
+        /// Query time: ratio = (10ms + duration) / (10ms + baseline); an absent result
+        /// counts as 2× this version's own worst time. Geometric mean across enabled
+        /// queries (dataset on + query checkbox on).
+        metric_noun = 'query time';
+        summaries = filtered_data.map(elem => {
+            const all_timings = elem.result.map(selectRun).filter(x => x !== null);
+            const fallback_timing = all_timings.length ? missing_result_penalty * Math.max(...all_timings) : missing_result_time;
+            let accumulator = 0, used = 0;
+            for (let i = 0; i < num_queries; ++i) {
+                if (!any_enabled || queryEnabled(i)) {
+                    const curr = selectRun(elem.result[i]) ?? fallback_timing;
+                    const base = selectRun(baseline_data[i]);
+                    if (base === null) { continue; }
+                    accumulator += Math.log((constant_time_add + curr) / (constant_time_add + base));
+                    ++used;
+                }
             }
-        }
-        return used ? Math.exp(accumulator / used) : 1;
-    });
+            return used ? Math.exp(accumulator / used) : 1;
+        });
+        value_text = idx => `×${summaries[idx].toFixed(2)}`;
+    }
+    const noun_el = document.getElementById('metric-noun');
+    if (noun_el) { noun_el.textContent = metric_noun; }
 
     /// Both the summary chart and the details table are ordered by version date, latest
     /// first (not by result). max_ratio still scales the horizon bars to the slowest.
@@ -617,7 +658,7 @@ function renderSummary(filtered_data, baseline_data) {
         if (da != db) { return da < db ? 1 : -1; }
         return filtered_data[b].version.localeCompare(filtered_data[a].version, undefined, { numeric: true });
     });
-    const max_ratio = Math.max(...summaries);
+    const max_ratio = Math.max(...summaries.filter(x => x != null));
 
     sorted_indices.map(idx => {
         const elem = filtered_data[idx];
@@ -650,12 +691,12 @@ function renderSummary(filtered_data, baseline_data) {
         const ratio = summaries[idx];
         let td_number = document.createElement('td');
         td_number.className = 'summary-number';
-        td_number.appendChild(document.createTextNode(`×${ratio.toFixed(2)}`));
+        td_number.appendChild(document.createTextNode(value_text(idx)));
 
         /// Horizon (multi-scale) bar, ported from the main ClickBench page: the same
         /// value is drawn at 1×, 10×, 100×, 1000× zoom in four colour bands, so small
         /// differences near the fast end stay visible across a wide dynamic range.
-        const percentage = ratio / max_ratio * 100;
+        const percentage = (ratio != null && isFinite(max_ratio) && max_ratio > 0) ? ratio / max_ratio * 100 : 0;
         let td_bar = document.createElement('td');
         td_bar.className = 'summary-bar-cell';
         let bar = document.createElement('div');
@@ -749,7 +790,7 @@ function render() {
         th.appendChild(name);
         if (elem.release_date) {
             let d = document.createElement('div');
-            d.className = 'note';
+            d.className = 'th-date';
             d.appendChild(document.createTextNode(elem.release_date));
             th.appendChild(d);
         }
@@ -877,6 +918,13 @@ function render() {
             details_body.appendChild(tr);
         }
     });
+
+    /// Pin the second sticky column (query number) right after the first (checkbox):
+    /// set its left offset to column 1's actual rendered width.
+    const col1 = details_head.children[0];
+    if (col1) {
+        document.documentElement.style.setProperty('--qn-left', col1.getBoundingClientRect().width + 'px');
+    }
 }
 
 /// Compact URL state, ported from the main ClickBench page: each selector set is
