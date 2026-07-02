@@ -83,6 +83,11 @@ CLIENT_MODE=""   # set by start_server: exec | sidecar
 # CLIENT_BASIC=1 marks a prehistoric client that supports only the basic options (no
 # --time / --format / --max_memory_usage); set by detect_client_caps, used by run_query.
 CLIENT_BASIC=""
+# Per-query memory-limit flag, decided at bench time (see run_benchmark). Set only for
+# versions whose *effective* default max_memory_usage is 10 GB, so raising it lets their
+# big queries finish. Modern versions default to 0 (unlimited) and lean on disk spill --
+# forcing a limit there would defeat the spill and skew the result, so we leave it empty.
+MEM_FLAG=""
 # HOME=/tmp: old images set the clickhouse user's home to /nonexistent, so the
 # client can't write its history file. TZ=UTC + the zoneinfo mount: some old
 # client images ship no tzdata and otherwise fail at startup with "Could not
@@ -469,7 +474,7 @@ run_query() {
                 e=$(date +%s.%N)
                 [ "${rc}" = 0 ] && res=$(awk "BEGIN{printf \"%.3f\", ${e}-${s}}")
             else
-                res=$(printf '%s' "${query}" | client --database "${QDB:-default}" --time --max_memory_usage="${MEM}" --format=Null 2>&1)
+                res=$(printf '%s' "${query}" | client --database "${QDB:-default}" --time ${MEM_FLAG} --format=Null 2>&1)
                 rc=$?
             fi
             CH_TIMEOUT=""
@@ -576,6 +581,16 @@ run_benchmark() {
     # run_query times them externally instead.
     if client --query "SELECT 1" --time </dev/null >/dev/null 2>&1; then CLIENT_BASIC=""; else CLIENT_BASIC=1; fi
     echo "client capabilities on ${VERSION}: $([ -n "${CLIENT_BASIC}" ] && echo 'basic (external timing)' || echo 'full (--time/--format/--max_memory_usage)')" >&2
+    # Raise the per-query memory limit ONLY where the effective default is 10 GB (the value
+    # the old default-profile users.xml ships). Modern versions default to 0 (unlimited) and
+    # spill to disk under memory pressure -- imposing a huge limit there defeats the spill.
+    MEM_FLAG=""
+    if [ -z "${CLIENT_BASIC}" ]; then
+        local memdef
+        memdef=$(client --query "SELECT value FROM system.settings WHERE name = 'max_memory_usage'" </dev/null 2>/dev/null | tr -d '[:space:]\r')
+        [ "${memdef}" = "10000000000" ] && MEM_FLAG="--max_memory_usage=${MEM}"
+        echo "server default max_memory_usage=${memdef:-unknown}; per-query override: ${MEM_FLAG:-none}" >&2
+    fi
     ACTUAL=$(server_version)
     RELEASE=$(release_date)
     echo "benchmarking ${VERSION} (server reports ${ACTUAL:-unknown}, released ${RELEASE:-unknown})" >&2
