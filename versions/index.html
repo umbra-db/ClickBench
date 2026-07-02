@@ -316,6 +316,7 @@
             border-top: 2px solid rgba(128, 128, 128, 0.5);
             padding-top: 4px;
             padding-bottom: 4px;
+            text-align: left;
         }
         .dataset-name { text-transform: uppercase; letter-spacing: 0.03em; }
     </style>
@@ -743,15 +744,16 @@ function render() {
         selectors.queries = selectors.queries.map(() => checked);
         render(); updateHistory();
     });
+    /// The total is only meaningful when every enabled dataset actually loaded; if a
+    /// version skipped one, its sum would be misleadingly small, so show "—" instead.
+    const fullyLoaded = e => e.load_time && enabled_datasets.every(d => e.load_time[d.name] != null);
     metricRow('Load time', sorted_indices.map(idx => {
-        const e = filtered_data[idx]; let s = null;
-        enabled_datasets.forEach(d => { if (e.load_time && e.load_time[d.name] != null) s = (s ?? 0) + e.load_time[d.name]; });
-        return s;
+        const e = filtered_data[idx];
+        return fullyLoaded(e) ? enabled_datasets.reduce((s, d) => s + e.load_time[d.name], 0) : null;
     }), formatTime);
     metricRow('Data size', sorted_indices.map(idx => {
-        const e = filtered_data[idx]; let s = null;
-        enabled_datasets.forEach(d => { if (e.data_size && e.data_size[d.name] != null) s = (s ?? 0) + e.data_size[d.name]; });
-        return s;
+        const e = filtered_data[idx];
+        return fullyLoaded(e) ? enabled_datasets.reduce((s, d) => s + (e.data_size ? e.data_size[d.name] : 0), 0) : null;
     }), formatSize);
 
     /// Per-dataset sections: a header/separator row (its checkbox toggles that dataset's
