@@ -579,6 +579,44 @@ namespace strconvert
 }
 EOF
 
+# -- jsonxx.h: pre-2014-10 FileChecker (Log-table sizes.json) used the third-party
+#    jsonxx JSON library, later replaced by ClickHouse's own JSON. The benchmark uses
+#    MergeTree, never Log/StripeLog/TinyLog, so FileChecker is never exercised. Provide
+#    a compile-only stub: parse() is a no-op (empty map), so the getters never run. --
+mkdir -p contrib/jsonxx-compat
+cat > contrib/jsonxx-compat/jsonxx.h <<'EOF'
+#pragma once
+// Compile-only stub of the third-party jsonxx (see reconstruct.sh). FileChecker is
+// the only user and is never exercised by the benchmark (MergeTree, not Log tables).
+#include <string>
+#include <map>
+#include <istream>
+namespace jsonxx
+{
+    enum Assortment { JSON = 0, JSONx = 1 };
+    class Object;
+    class Value
+    {
+    public:
+        template <typename T> T & get() { static T v; return v; }
+    };
+    class Object
+    {
+    public:
+        Object() {}
+        Object(const std::string &, const std::string &) {}
+        template <typename T> T get(const std::string &) const { return T(); }
+        void import(const std::string &, const Object &) {}
+        std::string write(unsigned = JSON) const { return "{}"; }
+        const std::map<std::string, Value *> & kv_map() const { return values_; }
+        bool parse(std::istream &) { return true; }
+        bool parse(const std::string &) { return true; }
+    private:
+        std::map<std::string, Value *> values_;
+    };
+}
+EOF
+
 # -- stats/*: the pre-2015-12 trees include several headers from an external Yandex
 #    "stats" library that was never open-sourced. At the 2015-11 -> 2015-12 boundary
 #    these were inlined into the repo (a coordinated refactor). We reproduce that:
@@ -911,7 +949,7 @@ done
 # -- root CMakeLists: add the quicklz/re2_st include dirs and, on the C++ flags,
 #    -fpermissive plus the force-included cmath shim (anchored on the donor's
 #    stable libcityhash include line / -std=gnu++1y flag) --
-sed -i 's#include_directories (${METRICA_SOURCE_DIR}/contrib/libcityhash/)#include_directories (${METRICA_SOURCE_DIR}/contrib/quicklz-stub/)\ninclude_directories (${METRICA_SOURCE_DIR}/contrib/re2_st_gen/)\ninclude_directories (${METRICA_SOURCE_DIR}/contrib/statdaemons-compat/)\ninclude_directories (${METRICA_SOURCE_DIR}/contrib/yandex-compat/)\ninclude_directories (${METRICA_SOURCE_DIR}/contrib/dc-compat/)\ninclude_directories (${METRICA_SOURCE_DIR}/contrib/stats-compat/)\ninclude_directories (${METRICA_SOURCE_DIR}/contrib/strconvert-compat/)\ninclude_directories (${METRICA_SOURCE_DIR}/contrib/libcityhash/)#' CMakeLists.txt
+sed -i 's#include_directories (${METRICA_SOURCE_DIR}/contrib/libcityhash/)#include_directories (${METRICA_SOURCE_DIR}/contrib/quicklz-stub/)\ninclude_directories (${METRICA_SOURCE_DIR}/contrib/re2_st_gen/)\ninclude_directories (${METRICA_SOURCE_DIR}/contrib/statdaemons-compat/)\ninclude_directories (${METRICA_SOURCE_DIR}/contrib/yandex-compat/)\ninclude_directories (${METRICA_SOURCE_DIR}/contrib/dc-compat/)\ninclude_directories (${METRICA_SOURCE_DIR}/contrib/stats-compat/)\ninclude_directories (${METRICA_SOURCE_DIR}/contrib/strconvert-compat/)\ninclude_directories (${METRICA_SOURCE_DIR}/contrib/jsonxx-compat/)\ninclude_directories (${METRICA_SOURCE_DIR}/contrib/libcityhash/)#' CMakeLists.txt
 # Force-include a few standard headers: on this (trusty) toolchain they aren't
 # pulled in transitively the way the newer 16.04/boost-1.58 headers were, so code
 # that assumes std::accumulate (<numeric>) / std::mt19937 (<random>) is in scope
