@@ -99,6 +99,26 @@ client() {
     esac
 }
 
+# Existence check that works on EVERY version. The prehistoric clients/servers lack
+# EXISTS TABLE / SHOW TABLES / DESCRIBE / system.tables, but a bare SELECT ... LIMIT 0
+# succeeds iff the table exists (and errors "Unknown table" otherwise).
+table_exists() { client --database "$1" --query "SELECT 1 FROM $2 LIMIT 0" </dev/null >/dev/null 2>&1; }
+
+# Run a (possibly multi-statement, ;-separated) DDL script ONE statement at a time via
+# --query. The prehistoric clients have no --multiquery, so a DROP;CREATE script sent that
+# way throws UnknownOptionException. A failed DROP ... IF EXISTS is harmless; the call
+# fails only if a CREATE statement fails. Reads the script on stdin.
+run_ddl() {
+    local db="$1" stmt rc=0
+    while IFS= read -r -d ';' stmt; do
+        case "${stmt}" in *[![:space:]]*) : ;; *) continue ;; esac   # skip blank/whitespace-only
+        if ! client --database "${db}" --query "${stmt}" </dev/null; then
+            case "${stmt}" in *[Cc][Rr][Ee][Aa][Tt][Ee]*) rc=1 ;; esac
+        fi
+    done
+    return "${rc}"
+}
+
 # Versions with no published image (clickhouse-built:*) are compiled from source
 # on the fly here, so the benchmark is self-contained (nothing is pulled from a
 # registry). The build recipe is looked up by version: tagged / bare-number
@@ -189,14 +209,15 @@ load_one_dataset() {
         [ -f "${DATA}/${file}" ] || { echo "SKIP ${ds}.${table}: ${file} not present"; continue; }
         # Already loaded (a previous pass)? Skip, so the retry pass below only reloads
         # the tables that are actually missing rather than dropping and redoing them.
-        if [ "$(client --database "${ds}" --query "EXISTS TABLE ${table}" 2>/dev/null | tr -d '\r')" = "1" ]; then
+        if table_exists "${ds}" "${table}"; then
             cnt="$(client --database "${ds}" --query "SELECT count() FROM ${table}" 2>/dev/null | tr -d '\r')"
             [ -n "${cnt}" ] && [ "${cnt}" != "0" ] && { echo "already loaded ${ds}.${table} (${cnt} rows), skipping"; continue; }
         fi
         ddl="$("${HERE}/create/create.sh" "${VERSION}" "${ds}" "${table}")"
         echo "=== CREATE ${ds}.${table} on ${VERSION} ==="
         echo "${ddl}"
-        if ! printf '%s' "${ddl}" | client --database "${ds}" --multiquery; then
+        # One statement at a time (no --multiquery on prehistoric clients).
+        if ! printf '%s' "${ddl}" | run_ddl "${ds}"; then
             echo "CREATE ${ds}.${table} FAILED on ${VERSION}"; continue
         fi
         echo "=== INSERT INTO ${ds}.${table} FORMAT Native  <-  ${file} ($(du -h "${DATA}/${file}" | cut -f1)) ==="
@@ -225,12 +246,30 @@ load_one_dataset() {
 }
 
 # True if every table of this dataset whose source file is present exists on the server.
+# Used by the load retry pass to decide what to reload.
 dataset_loaded() {
     local ds="$1" pair table file
     for pair in ${TABLES[$ds]}; do
         table="${pair%%:*}"; file="${pair##*:}"
         [ -f "${DATA}/${file}" ] || continue
-        [ "$(client --database "${ds}" --query "EXISTS TABLE ${table}" 2>/dev/null | tr -d '\r')" = "1" ] || return 1
+        table_exists "${ds}" "${table}" || return 1
+    done
+    return 0
+}
+
+# Stricter: true only if EVERY table of the dataset is fully present -- its data file
+# exists, the table exists, and it holds at least one row. If any table failed to load
+# (dropped on failure, or empty), the dataset is not benchmarked and neither its load time
+# nor its data size is reported. (An empty Log table's count() returns blank, so a table
+# that did not load counts as not-loaded here.)
+dataset_fully_loaded() {
+    local ds="$1" pair table file cnt
+    for pair in ${TABLES[$ds]}; do
+        table="${pair%%:*}"; file="${pair##*:}"
+        [ -f "${DATA}/${file}" ] || return 1
+        table_exists "${ds}" "${table}" || return 1
+        cnt="$(client --database "${ds}" --query "SELECT count() FROM ${table}" 2>/dev/null | tr -d '\r')"
+        [ -n "${cnt}" ] && [ "${cnt}" != "0" ] || return 1
     done
     return 0
 }
@@ -455,25 +494,29 @@ detect_client() {
     return 1
 }
 
-# {"dataset": sum_of_table_load_seconds, ...} from the load phase (LOAD_STATS).
+# {"dataset": sum_of_table_load_seconds, ...} from the load phase (LOAD_STATS), restricted
+# to the fully-loaded datasets ($1 = space-separated list): a dataset with any table that
+# failed to load reports no load time at all.
 emit_load_time_json() {
+    local loaded=" ${1:-} "
     if [ -s "${LOAD_STATS}" ]; then
-        awk -F'\t' '{s[$1]+=$2} END{printf "{"; for(d in s){printf "%s\"%s\": %s",(n++?", ":""),d,s[d]}; printf "}"}' "${LOAD_STATS}"
+        awk -F'\t' -v loaded="${loaded}" 'index(loaded, " "$1" ")>0 {s[$1]+=$2}
+            END{printf "{"; for(d in s){printf "%s\"%s\": %s",(n++?", ":""),d,s[d]}; printf "}"}' "${LOAD_STATS}"
     else
         printf '{}'
     fi
 }
 
-# {"dataset": on_disk_bytes, ...}: per-database sum of bytes_on_disk (each dataset
-# is its own database), or a data-directory measurement for versions without it.
+# {"dataset": on_disk_bytes, ...}: per-database sum of bytes_on_disk (each dataset is its
+# own database). $1 = the fully-loaded datasets; a dataset with any table that failed to
+# load reports no size. Prefer system.parts; for the prehistoric versions that lack it
+# (added ~2014-08, and Log has no parts at all) measure the on-disk data directory instead.
 emit_data_size_json() {
-    local out loaded
-    # Only report a data size for datasets that actually loaded (recorded a load time).
-    # A dataset with no load time is treated as not loaded, so its size is omitted
-    # (null on the page) rather than reporting an empty/partial directory.
-    loaded=" $(awk -F'\t' '{print $1}' "${LOAD_STATS}" 2>/dev/null | sort -u | tr '\n' ' ')"
+    local out loaded=" ${1:-} "
     out=$(client --query "SELECT database, sum(bytes_on_disk) FROM system.parts WHERE active AND database NOT IN ('system', 'information_schema', 'INFORMATION_SCHEMA') GROUP BY database FORMAT TabSeparated" </dev/null 2>/dev/null)
     if [ -z "${out}" ]; then
+        # No system.parts: sum the byte size of each dataset's data directory in the
+        # container (works for both Log and MergeTree; -L follows the store/ symlinks).
         out=$(sudo docker exec "${CONTAINER}" sh -c '
             base=/var/lib/clickhouse; [ -d "$base/data" ] || base=/opt/clickhouse
             for d in "$base"/data/*/; do [ -d "$d" ] || continue; db=$(basename "$d");
@@ -512,21 +555,29 @@ server_version() {
 
 # Time every query and write results/<version>.json.
 run_benchmark() {
-    local ACTUAL RELEASE ds query FIRST=1 qnum=0 row QDB MINVERS mv lidx
+    local ACTUAL RELEASE ds query FIRST=1 qnum=0 row QDB MINVERS mv lidx ds_loaded FULLY_LOADED=""
     ACTUAL=$(server_version)
     RELEASE=$(release_date)
     echo "benchmarking ${VERSION} (server reports ${ACTUAL:-unknown}, released ${RELEASE:-unknown})" >&2
+    # Datasets that loaded in full. A dataset with even one table that failed to load is
+    # not benchmarked (its queries record null) and reports neither load time nor size.
+    for ds in ${QUERY_ORDER}; do
+        if dataset_fully_loaded "${ds}"; then FULLY_LOADED+=" ${ds}";
+        else echo "=== ${ds}: not fully loaded on ${VERSION}; skipping its queries, load time and size ===" >&2; fi
+    done
     {
         echo '{'
         echo "    \"version\": \"${VERSION}\","
         echo "    \"actual_version\": \"${ACTUAL}\","
         echo "    \"release_date\": \"${RELEASE}\","
-        echo "    \"load_time\": $(emit_load_time_json),"
-        echo "    \"data_size\": $(emit_data_size_json),"
+        echo "    \"load_time\": $(emit_load_time_json "${FULLY_LOADED}"),"
+        echo "    \"data_size\": $(emit_data_size_json "${FULLY_LOADED}"),"
         echo '    "result":'
         echo '    ['
         for ds in ${QUERY_ORDER}; do
             QDB="${ds}"   # run this dataset's queries with its database as default
+            # Skip a dataset that did not fully load: all its queries record null.
+            case " ${FULLY_LOADED} " in *" ${ds} "*) ds_loaded=1 ;; *) ds_loaded=0 ;; esac
             # Per-query minimum supported version (queries/<ds>.minver, one token per
             # query, aligned to <ds>.sql): "0" = runs everywhere, a version = first
             # release known to run it, "26.7"(future) = never seen to succeed. When
@@ -542,7 +593,10 @@ run_benchmark() {
                 query="${query%;}"                       # strip trailing semicolon
                 qnum=$((qnum + 1))
                 mv="${MINVERS[lidx]:-0}"; lidx=$((lidx + 1))
-                if [ "${mv}" != "0" ] && ! version_ge "${VERSION}" "${mv}"; then
+                if [ "${ds_loaded}" = 0 ]; then
+                    row="$(null_row)"
+                    echo "q${qnum} [${ds}]: SKIPPED (dataset not fully loaded); recording null" >&2
+                elif [ "${mv}" != "0" ] && ! version_ge "${VERSION}" "${mv}"; then
                     row="$(null_row)"
                     echo "q${qnum} [${ds}]: SKIPPED (min supported ${mv}); recording null" >&2
                 else
