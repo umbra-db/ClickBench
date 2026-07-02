@@ -913,7 +913,14 @@ for base in ('dbms', 'libs'):
                 continue
             if 'DateLUT' not in s:
                 continue
-            ns = ref.sub(r'const auto & \1 = DateLUT::instance(\2)', s)
+            # Pre-2014-08 named the singleton accessor DateLUTSingleton (DateLUTSingleton
+            # ::instance() -> the calendar). Route it to the donor's DateLUT singleton and
+            # rename the type to DateLUT, so the migration below handles it uniformly.
+            # (Applied to ns, not s, so the ns != s write-back check still fires.)
+            ns = s
+            if 'DateLUTSingleton' in ns:
+                ns = ns.replace('DateLUTSingleton::instance', 'DateLUT::instance').replace('DateLUTSingleton', 'DateLUT')
+            ns = ref.sub(r'const auto & \1 = DateLUT::instance(\2)', ns)
             ns = ns.replace('DateLUT::Values', 'DateLUTImpl::Values')
             # Any remaining reference/pointer to `DateLUT` (e.g. a `DateLUT &` function
             # parameter carrying the calendar) is really the DateLUTImpl now — and it is
