@@ -119,14 +119,29 @@ mkdir -p contrib/quicklz-stub/quicklz
 cat > contrib/quicklz-stub/quicklz/quicklz_level1.h <<'EOF'
 #pragma once
 #include <cstddef>
-// QuickLZ was removed at the 2016-03 open-sourcing and never imported to the
-// public repo. The quicklz compression method is never produced or consumed
-// here (data uses LZ4/ZSTD), so these symbols only need to compile and link.
+#include <cstdint>
+#include <cstring>
+// QuickLZ was removed at the 2016-03 open-sourcing and never imported to the public
+// repo. Data is compressed with LZ4/ZSTD, not QuickLZ, so qlz_compress/qlz_decompress
+// are never called and only need to link. BUT the compressed-block reader parses the
+// block-size HEADER via qlz_size_compressed/qlz_size_decompressed for LZ4 blocks too
+// (the pre-2015 CompressedWriteBuffer stores the LZ4 sizes in QuickLZ header layout),
+// so those two must be real: read the little-endian sizes from the header -- 4-byte
+// "long" form when the 0x02 bit is set, which is what ClickHouse always writes.
+// (A no-op returning 0 here silently corrupts every read -> "Checksum doesn't match".)
 struct qlz_state_compress { char scratch[1000000]; };
 struct qlz_state_decompress { char scratch[1000000]; };
+inline size_t qlz_size_compressed(const char * source)
+{
+    if (static_cast<unsigned char>(source[0]) & 2) { uint32_t n; std::memcpy(&n, source + 1, 4); return n; }
+    return static_cast<unsigned char>(source[1]);
+}
+inline size_t qlz_size_decompressed(const char * source)
+{
+    if (static_cast<unsigned char>(source[0]) & 2) { uint32_t n; std::memcpy(&n, source + 5, 4); return n; }
+    return static_cast<unsigned char>(source[2]);
+}
 inline size_t qlz_compress(const void *, char * dst, size_t size, qlz_state_compress *) { (void)dst; return size; }
-inline size_t qlz_size_compressed(const char *) { return 0; }
-inline size_t qlz_size_decompressed(const char *) { return 0; }
 inline size_t qlz_decompress(const char *, void *, qlz_state_decompress *) { return 0; }
 EOF
 cp contrib/quicklz-stub/quicklz/quicklz_level1.h contrib/quicklz-stub/quicklz/quicklz_level2.h
