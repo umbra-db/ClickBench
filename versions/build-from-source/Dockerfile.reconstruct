@@ -126,7 +126,10 @@ RUN cat > /etc/clickhouse-server/config.xml <<'EOF'
 EOF
 RUN cat > /etc/clickhouse-server/users.xml <<'EOF'
 <yandex>
-    <profiles><default><max_memory_usage>10000000000</max_memory_usage></default></profiles>
+    <!-- Empty default profile: the oldest snapshots predate settings like
+         max_memory_usage and reject unknown settings in users.xml at boot. The
+         runner sets a per-query memory limit where the version supports it. -->
+    <profiles><default></default></profiles>
     <users><default>
         <password></password>
         <networks><ip>::/0</ip></networks>

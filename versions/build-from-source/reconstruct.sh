@@ -68,6 +68,17 @@ s = re.sub(r"add_library\s*\(\s*common.*?\)",
            s, count=1, flags=re.S)
 wr(f, s)
 
+# libmysqlxx: same treatment. The donor lists sources explicitly (incl. Value.cpp)
+# and omits String.cpp, but pre-2014-06 defines mysqlxx::String::throwException in
+# String.cpp -> undefined reference at link. Glob so the target's own sources compile.
+f = "libs/libmysqlxx/CMakeLists.txt"
+if os.path.exists(f):
+    s = rd(f)
+    s = re.sub(r"add_library\s*\(\s*mysqlxx\b.*?\)",
+               "file(GLOB mysqlxx_src src/*.cpp)\nadd_library(mysqlxx ${mysqlxx_src})",
+               s, count=1, flags=re.S)
+    wr(f, s)
+
 # Drop the (never-vendored) mongoclient link name wherever it appears.
 f = "dbms/CMakeLists.txt"; wr(f, re.sub(r"\bmongoclient\b", "", rd(f)))
 
@@ -771,51 +782,48 @@ EOF
 #      * stats/{UniquesHashSet,ReservoirSampler,ReservoirSamplerDeterministic}.h ->
 #        the algorithms, overlaid in-tree from PATCH_REF and forwarded. --
 mkdir -p contrib/stats-compat/stats
-HASH_H=dbms/include/DB/Common/HashTable/Hash.h
-# (Match the definition `intHash32(` -- not the prose comment that mentions the
-#  name -- so we don't skip the append on a false positive.)
-if [ -f "$HASH_H" ] && ! grep -q 'intHash32(' "$HASH_H"; then
-    cat >> "$HASH_H" <<'EOF'
-
-/// Added by reconstruct.sh: the templated salted UInt64 -> UInt32 hash (ttwang) and
-/// its container functor. Before 2015-12 these lived in the external <stats/IntHash.h>;
-/// 2015-12 moved them into this header. Kept identical to the 2015-12 definition.
-template <DB::UInt64 salt>
-inline DB::UInt32 intHash32(DB::UInt64 key)
-{
-	key ^= salt;
-	key = (~key) + (key << 18);
-	key = key ^ ((key >> 31) | (key << 33));
-	key = key * 21;
-	key = key ^ ((key >> 11) | (key << 53));
-	key = key + (key << 6);
-	key = key ^ ((key >> 22) | (key << 42));
-	return key;
-}
-
-template <typename T, DB::UInt64 salt = 0>
-struct IntHash32
-{
-	size_t operator() (const T & key) const { return intHash32<salt>(key); }
-};
-EOF
-fi
-# intHashCRC32 (CRC32C via SSE4.2) was added to Hash.h after 2014-12, but the
-# back-ported UniquesHashSet uses it. Append it when absent (identical to the later
-# definition). Matched on the definition, not the prose comment.
-if [ -f "$HASH_H" ] && ! grep -q 'intHashCRC32(' "$HASH_H"; then
-    cat >> "$HASH_H" <<'EOF'
-
-/// Added by reconstruct.sh: CRC32C-based UInt64 -> UInt64 hash (SSE4.2), added to
-/// this header after 2014-12; used by the back-ported UniquesHashSet.
-inline DB::UInt64 intHashCRC32(DB::UInt64 x)
-{
-	DB::UInt64 crc = -1ULL;
-	asm("crc32q %[x], %[crc]\n" : [crc] "+r" (crc) : [x] "rm" (x));
-	return crc;
-}
-EOF
-fi
+# intHash32<salt>/IntHash32 and intHashCRC32 lived in the external <stats/IntHash.h>
+# before ~2015-12 (2015-12 moved them into Hash.h; intHashCRC32 arrived after 2014-12).
+# When Hash.h lacks a definition, INSERT it right after the includes -- not appended at
+# the end -- because Hash.h itself uses intHash32<0> early (in DefaultHash64), so the
+# definition must precede the first use. Guard matches the definition `intHash32(`
+# (the call `intHash32<0>(` does not), so trees that already define it are untouched.
+python3 - <<'PYEOF'
+import os, re
+p = "dbms/include/DB/Common/HashTable/Hash.h"
+if os.path.exists(p):
+    s = open(p, encoding="utf-8", errors="surrogateescape").read()
+    add = ""
+    if "intHash32(" not in s:
+        add += ("template <DB::UInt64 salt>\n"
+                "inline DB::UInt32 intHash32(DB::UInt64 key)\n{\n"
+                "\tkey ^= salt;\n"
+                "\tkey = (~key) + (key << 18);\n"
+                "\tkey = key ^ ((key >> 31) | (key << 33));\n"
+                "\tkey = key * 21;\n"
+                "\tkey = key ^ ((key >> 11) | (key << 53));\n"
+                "\tkey = key + (key << 6);\n"
+                "\tkey = key ^ ((key >> 22) | (key << 42));\n"
+                "\treturn key;\n}\n"
+                "template <typename T, DB::UInt64 salt = 0>\n"
+                "struct IntHash32 { size_t operator() (const T & key) const { return intHash32<salt>(key); } };\n")
+    if "intHashCRC32(" not in s:
+        add += ("inline DB::UInt64 intHashCRC32(DB::UInt64 x)\n{\n"
+                "\tDB::UInt64 crc = -1ULL;\n"
+                "\tasm(\"crc32q %[x], %[crc]\\n\" : [crc] \"+r\" (crc) : [x] \"rm\" (x));\n"
+                "\treturn crc;\n}\n")
+    if add:
+        # insert after <DB/Core/Types.h> (which defines UInt32/UInt64), else after the
+        # last include in the top block.
+        m = re.search(r'^#include\s*<DB/Core/Types\.h>[^\n]*\n', s, re.M)
+        if not m:
+            incs = list(re.finditer(r'^#include[^\n]*\n', s, re.M))
+            pos = incs[-1].end() if incs else 0
+        else:
+            pos = m.end()
+        s = s[:pos] + "\n// Added by reconstruct.sh: int hashes from the external <stats/IntHash.h>.\n" + add + "\n" + s[pos:]
+        open(p, "w", encoding="utf-8", errors="surrogateescape").write(s)
+PYEOF
 printf '#pragma once\n#include <DB/Common/HashTable/Hash.h>\n' > contrib/stats-compat/stats/IntHash.h
 
 # The overlaid 2015-12 ReservoirSampler{,Deterministic}.h back a small sample buffer
@@ -981,6 +989,10 @@ IAQ=dbms/src/Interpreters/InterpreterAlterQuery.cpp
 #    specialization does) -- the HLL is then only ever built on UInt64, which both
 #    compiles and is correct (2015-09+ restructured the code the same way). --
 AFU=dbms/include/DB/AggregateFunctions/AggregateFunctionUniq.h
+# Pre-2014-06 used UniquesHashSet as a plain (non-template) type: `typedef
+# UniquesHashSet Set;`. The back-ported UniquesHashSet is a template with a default
+# Hash, so a bare use needs <>. Add it.
+[ -f "$AFU" ] && sed -i 's#typedef UniquesHashSet Set;#typedef UniquesHashSet<> Set;#' "$AFU"
 if [ -f "$AFU" ] && grep -q 'AggregateFunctionUniqHLL12Data<String>' "$AFU" \
    && ! grep -q 'AggregateFunctionUniqHLL12Data<Float32>' "$AFU"; then
     python3 - "$AFU" <<'PYEOF'
