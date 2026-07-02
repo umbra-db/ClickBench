@@ -84,3 +84,28 @@ for v in "${VERSIONS[@]}"; do
     echo "  results/${v}.json (released ${rd:-unknown})" >&2
 done
 echo "wrote $(ls results/*.json 2>/dev/null | wc -l) result files" >&2
+
+# Name files without a dotted version prefix (bare revision-number tag builds such as
+# 53996) after their server-reported actual_version (1.1.53996), so every committed file
+# is named by a real version. Several consecutive tag builds can report the same version
+# (the revision wasn't bumped every tag), so dedupe by keeping the highest tag -- it is
+# the one matching the reported revision -- and set that file's version field to match.
+declare -A best
+for f in results/*.json; do
+    v="$(basename "${f}" .json)"
+    case "${v}" in [0-9]*.[0-9]*) continue ;; esac   # already has a dotted prefix
+    av="$(jq -r '.actual_version // empty' "${f}")"; [ -z "${av}" ] && continue
+    if [ -z "${best[${av}]:-}" ] || [ "${v}" -gt "${best[${av}]}" ]; then best[${av}]="${v}"; fi
+done
+for f in results/*.json; do
+    v="$(basename "${f}" .json)"
+    case "${v}" in [0-9]*.[0-9]*) continue ;; esac
+    av="$(jq -r '.actual_version // empty' "${f}")"; [ -z "${av}" ] && continue
+    if [ "${v}" = "${best[${av}]}" ]; then
+        jq -cS --arg av "${av}" '.version = $av' "${f}" > results/.rename.tmp
+        rm -f "${f}"; mv results/.rename.tmp "results/${av}.json"
+        echo "  renamed ${v}.json -> ${av}.json" >&2
+    else
+        rm -f "${f}"; echo "  dropped ${v}.json (duplicate of ${av})" >&2
+    fi
+done
