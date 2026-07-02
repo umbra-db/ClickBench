@@ -1228,13 +1228,19 @@ for base in ('dbms', 'libs'):
                     s = f.read()
             except OSError:
                 continue
-            if 'DateLUT' not in s:
+            if 'DateLUT' not in s and 'Yandex::' not in s:
                 continue
             # Pre-2014-08 named the singleton accessor DateLUTSingleton (DateLUTSingleton
             # ::instance() -> the calendar). Route it to the donor's DateLUT singleton and
             # rename the type to DateLUT, so the migration below handles it uniformly.
             # (Applied to ns, not s, so the ns != s write-back check still fires.)
             ns = s
+            # Pre-2014 much of the code lived in `namespace Yandex` (libmysqlxx uses
+            # Yandex::DateLUTSingleton / Yandex::DateLUT::Values / Yandex::DayNum_t /
+            # Yandex::VisitID_t). The donor moved all of these to global scope, so drop
+            # the Yandex:: qualifier; the methods those callers use (getValues,
+            # toHourInaccurate, ...) all still exist on the donor DateLUTImpl.
+            ns = ns.replace('Yandex::', '')
             if 'DateLUTSingleton' in ns:
                 ns = ns.replace('DateLUTSingleton::instance', 'DateLUT::instance').replace('DateLUTSingleton', 'DateLUT')
             ns = ref.sub(r'const auto & \1 = DateLUT::instance(\2)', ns)
