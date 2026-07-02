@@ -917,7 +917,10 @@ function render() {
 
             let td_query_num = document.createElement('td');
             td_query_num.className = 'note';
-            td_query_num.appendChild(document.createTextNode(`Q${query_num - start} `));
+            /// ClickBench (hits) queries are conventionally numbered from 0; the other
+            /// datasets are numbered from 1.
+            const qbase = d.name === 'hits' ? 0 : 1;
+            td_query_num.appendChild(document.createTextNode(`Q${query_num - start + qbase} `));
             let tooltip = document.createElement('span');
             tooltip.className = 'tooltip tooltip-query';
             tooltip.appendChild(document.createTextNode(query_meta[query_num].name));
