@@ -321,10 +321,14 @@ if [ ! -e dbms/include/DB/Common/Exception.h ] && [ -e dbms/include/DB/Core/Exce
     {
         printf '#pragma once\n#include <DB/Core/Exception.h>\n'
         # tryLogCurrentException(Poco::Logger *) overload was added after 2015-03;
-        # the back-ported ErrorHandlers.h calls it. Provide it (forwarding to the
-        # era's name-based overload) only when the tree lacks it, so it doesn't
-        # clash on 2015-04+ which already declare it.
-        if ! grep -q 'tryLogCurrentException(Poco::Logger' dbms/include/DB/Core/Exception.h 2>/dev/null; then
+        # the back-ported ErrorHandlers.h calls it. Provide it (forwarding to the era's
+        # name-based overload) only when the tree already has some tryLogCurrentException
+        # to forward to but lacks the Poco::Logger* variant. The oldest snapshots
+        # (pre-2014) have no tryLogCurrentException at all -- adding the overload there
+        # would make its body call a non-existent function and recurse onto itself, and
+        # nothing needs it anyway (they have no ErrorHandlers.h).
+        if grep -q 'tryLogCurrentException' dbms/include/DB/Core/Exception.h 2>/dev/null \
+           && ! grep -q 'tryLogCurrentException(Poco::Logger' dbms/include/DB/Core/Exception.h 2>/dev/null; then
             printf '#include <Poco/Logger.h>\n'
             printf 'namespace DB { inline void tryLogCurrentException(Poco::Logger * logger, const std::string & = "") { tryLogCurrentException(logger ? logger->name().c_str() : ""); } }\n'
         fi
