@@ -112,12 +112,40 @@ wr(f, s)
 SRC_RE = re.compile(r".+\.(cpp|cc|cxx|c|h|hpp|inc)$", re.I)
 def prune(cml):
     d = os.path.dirname(cml); s = rd(cml)
+    dropped = set()
     def fix(m):
         head, body = m.group(1), m.group(2)
-        kept = [t for t in body.split()
+        toks = body.split()
+        kept = [t for t in toks
                 if not SRC_RE.match(t) or os.path.exists(os.path.join(d, t))]
+        # If an executable listed source files but every one of them is absent in
+        # this (older) snapshot -- e.g. clickhouse-benchmark before Benchmark.cpp
+        # existed -- pruning would leave add_executable() with no sources, which
+        # cmake rejects. Drop the whole target instead (its link/INSTALL lines are
+        # removed below). We never build anything but clickhouse-server/-client.
+        emptied = (any(SRC_RE.match(t) for t in toks)
+                   and not any(SRC_RE.match(t) for t in kept))
+        if "add_executable" in head.lower() and emptied:
+            tm = re.search(r"\(\s*([^\s)]+)", head)
+            if tm:
+                dropped.add(tm.group(1))
+            return ""
+        if "add_library" in head.lower() and emptied:
+            # A library whose every listed source is absent in this older snapshot
+            # (e.g. zkutil before libzkutil had any .cpp). Unlike an executable it
+            # can be a link dependency of dbms, so we can't drop it -- give it an
+            # empty stub TU so cmake can determine a link language and build an
+            # (empty) archive. This era has no calls into it, so no undefined refs.
+            stub = os.path.join(d, "reconstruct_stub.cpp")
+            open(stub, "w").write("// Added by reconstruct.sh: empty TU so this "
+                                  "source-less library links.\n")
+            kept.append("reconstruct_stub.cpp")
         return head + " " + " ".join(kept) + ")"
     s2 = re.sub(r"(add_(?:library|executable)\s*\(\s*[^\s)]+)(.*?)\)", fix, s, flags=re.S|re.I)
+    for tgt in dropped:
+        # a dropped target can't be linked or installed; strip those statements too.
+        s2 = re.sub(r"target_link_libraries\s*\(\s*" + re.escape(tgt) + r"\b.*?\)", "", s2, flags=re.S|re.I)
+        s2 = re.sub(r"INSTALL\s*\([^)]*\b" + re.escape(tgt) + r"\b[^)]*\)", "", s2, flags=re.S|re.I)
     if s2 != s: wr(cml, s2)
 # os.walk (not glob(recursive=), which needs Python 3.5+; trusty ships 3.4).
 for root, _dirs, files in os.walk("."):
