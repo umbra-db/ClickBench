@@ -146,6 +146,17 @@ def prune(cml):
         # a dropped target can't be linked or installed; strip those statements too.
         s2 = re.sub(r"target_link_libraries\s*\(\s*" + re.escape(tgt) + r"\b.*?\)", "", s2, flags=re.S|re.I)
         s2 = re.sub(r"INSTALL\s*\([^)]*\b" + re.escape(tgt) + r"\b[^)]*\)", "", s2, flags=re.S|re.I)
+    # Drop add_subdirectory(X) when X isn't an existing directory: the donor build
+    # lists component dirs (e.g. TableFunctions) that an older snapshot doesn't have
+    # yet. cmake errors on a missing subdir; the code that would have linked its
+    # library isn't present in this era's globbed dbms sources either, so no dangling
+    # refs. Skip variable-driven forms -- only prune bare directory-name arguments.
+    def fix_subdir(m):
+        arg = m.group(1)
+        if "$" in arg or "{" in arg:
+            return m.group(0)
+        return m.group(0) if os.path.isdir(os.path.join(d, arg)) else ""
+    s2 = re.sub(r"add_subdirectory\s*\(\s*([^\s)]+)\s*\)", fix_subdir, s2, flags=re.I)
     if s2 != s: wr(cml, s2)
 # os.walk (not glob(recursive=), which needs Python 3.5+; trusty ships 3.4).
 for root, _dirs, files in os.walk("."):
@@ -1143,6 +1154,14 @@ s = add_after_string_spec(s, 'AggregateFunctionUniqCombinedData', comb)
 open(p, 'w', encoding='utf-8', errors='surrogateescape').write(s)
 PYEOF
 fi
+
+# -- std::tr1 -> std (pre-2014-02): the oldest snapshots use the pre-C++11 TR1
+#    namespace (std::tr1::unordered_set/map) and <tr1/...> include paths, which a
+#    modern gcc-5 in -std=gnu++1y mode no longer provides. Rewrite both to their C++11
+#    forms. Guarded by grep, so it's a no-op on trees that already use std:: directly. --
+grep -rlZ 'tr1' dbms libs 2>/dev/null | while IFS= read -r -d '' f; do
+    sed -i 's#<tr1/\([a-z_]*\)>#<\1>#g; s#std::tr1::#std::#g' "$f"
+done
 
 # -- HyperLogLog counter template arg order: pre-2015-09
 #    HyperLogLogWithSmallSetOptimization instantiates the counter as
