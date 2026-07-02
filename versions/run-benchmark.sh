@@ -68,11 +68,21 @@ image="$(cut -f2 <<<"${line}")"
 [ "${image}" = "unavailable" ] && { echo "${VERSION} is unavailable (no image/package/source)" >&2; exit 1; }
 echo "resolved to ${VERSION} (${image})"
 
-# For source-built versions, get the tag and required GCC from versions.txt.
+# For source-built versions, get the tag and required GCC from versions.txt (the tagged /
+# bare-number builds). The prehistoric monthly reconstructions live in monthly.tsv instead
+# and are rebuilt from their commit + revision by run-version.sh's ensure_built_image on the
+# VM (tag/gcc are unused for them), so accept those too -- only a version in neither file is
+# a genuine error.
 tag="-"; gcc="5"
 if [[ "${image}" == clickhouse-built:* ]]; then
     read -r tag gcc < <(awk -F'\t' -v v="${VERSION}" '$1==v{print $2, ($4==""?5:$4)}' build-from-source/versions.txt)
-    [ -z "${tag}" ] && { echo "no build recipe for ${VERSION} in versions.txt" >&2; exit 1; }
+    if [ -z "${tag}" ]; then
+        if awk -F'\t' -v v="${VERSION}" '$1==v{f=1} END{exit !f}' build-from-source/monthly.tsv; then
+            tag="-"; gcc="5"   # monthly reconstruction: run-version.sh rebuilds it from monthly.tsv
+        else
+            echo "no build recipe for ${VERSION} in versions.txt or monthly.tsv" >&2; exit 1
+        fi
+    fi
 fi
 
 arch=$(aws_retry aws ec2 describe-instance-types --instance-types "$machine" --query 'InstanceTypes[0].ProcessorInfo.SupportedArchitectures' --output text)
