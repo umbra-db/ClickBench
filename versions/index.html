@@ -517,7 +517,15 @@ if (stored_theme) {
 let versions_elem = document.getElementById('selectors_version');
 let datasets_elem = document.getElementById('selectors_dataset');
 
-let unique_versions = [...new Set(data.map(elem => elem.version))];  // data is release-ordered
+/// Order the selector by version number, latest first -- the same key the chart and
+/// table sort by (server-reported actual_version, falling back to the label, numeric-aware
+/// with a label tie-break), so the three views stay in lockstep.
+let actual_of = {};
+data.forEach(e => { actual_of[e.version] = e.actual_version || e.version; });
+let unique_versions = [...new Set(data.map(elem => elem.version))].sort((a, b) => {
+    const c = (actual_of[b] || b).localeCompare(actual_of[a] || a, undefined, { numeric: true });
+    return c != 0 ? c : b.localeCompare(a, undefined, { numeric: true });
+});
 
 function toggle(e, elem, selectors_map) {
     selectors_map[elem] = !selectors_map[elem];
