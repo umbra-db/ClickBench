@@ -80,6 +80,9 @@ cleanup() { sudo docker rm -f "${CONTAINER}" >/dev/null 2>&1; }
 # network namespace (`sidecar` mode) — same native protocol, precise --time.
 CLIENT_IMAGE="${IMAGE/-server/-client}"
 CLIENT_MODE=""   # set by start_server: exec | sidecar
+# CLIENT_BASIC=1 marks a prehistoric client that supports only the basic options (no
+# --time / --format / --max_memory_usage); set by detect_client_caps, used by run_query.
+CLIENT_BASIC=""
 # HOME=/tmp: old images set the clickhouse user's home to /nonexistent, so the
 # client can't write its history file. TZ=UTC + the zoneinfo mount: some old
 # client images ship no tzdata and otherwise fail at startup with "Could not
@@ -449,14 +452,26 @@ dataset_supported() {
 # one) is written to the log ONCE per query — tagged with the query's label — so a
 # null in the results can be traced to an unsupported feature, a timeout or a crash.
 run_query() {
-    local query="$1" label="${2:-query}" i res rc out="[" skip_rest=0 logged=0
+    local query="$1" label="${2:-query}" i res rc out="[" skip_rest=0 logged=0 s e
     for i in $(seq 1 "${TRIES}"); do
         if [ "${skip_rest}" = 1 ]; then
             res="null"                     # an earlier try timed out or crashed; skip the rest
         else
             CH_TIMEOUT="${QUERY_TIMEOUT:-100}"
-            res=$(printf '%s' "${query}" | client --database "${QDB:-default}" --time --max_memory_usage="${MEM}" --format=Null 2>&1)
-            rc=$?
+            if [ -n "${CLIENT_BASIC}" ]; then
+                # Prehistoric client: no --time / --format / --max_memory_usage. Time the whole
+                # invocation end to end and discard the output to /dev/null; on success res is
+                # that elapsed time (matches the timing regex below), on error res is the
+                # server's message (handled by the error branches).
+                s=$(date +%s.%N)
+                res=$(client --database "${QDB:-default}" --query "${query}" </dev/null 2>&1 >/dev/null)
+                rc=$?
+                e=$(date +%s.%N)
+                [ "${rc}" = 0 ] && res=$(awk "BEGIN{printf \"%.3f\", ${e}-${s}}")
+            else
+                res=$(printf '%s' "${query}" | client --database "${QDB:-default}" --time --max_memory_usage="${MEM}" --format=Null 2>&1)
+                rc=$?
+            fi
             CH_TIMEOUT=""
             if [ "${rc}" = 124 ] || [ "${rc}" = 137 ]; then     # `timeout` killed it
                 [ "${logged}" = 0 ] && echo "${label}: FAILED (timeout >${QUERY_TIMEOUT:-100}s); recording null, skipping remaining tries" >&2
@@ -556,6 +571,11 @@ server_version() {
 # Time every query and write results/<version>.json.
 run_benchmark() {
     local ACTUAL RELEASE ds query FIRST=1 qnum=0 row QDB MINVERS mv lidx ds_loaded FULLY_LOADED=""
+    # Detect whether this version's client understands --time (and thus --format /
+    # --max_memory_usage). The oldest reconstructed clients support only basic options, so
+    # run_query times them externally instead.
+    if client --query "SELECT 1" --time </dev/null >/dev/null 2>&1; then CLIENT_BASIC=""; else CLIENT_BASIC=1; fi
+    echo "client capabilities on ${VERSION}: $([ -n "${CLIENT_BASIC}" ] && echo 'basic (external timing)' || echo 'full (--time/--format/--max_memory_usage)')" >&2
     ACTUAL=$(server_version)
     RELEASE=$(release_date)
     echo "benchmarking ${VERSION} (server reports ${ACTUAL:-unknown}, released ${RELEASE:-unknown})" >&2
