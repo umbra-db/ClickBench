@@ -48,18 +48,19 @@ ARG DONOR=5360c78806e043d0d2bf3de15a363f87fbdaf5f4
 # gcc-hostile files surface while sweeping backwards.
 ARG PATCH_REF=a7387d9ce431a1f288d1a4898fa0c0c36c765abc
 # Two overlay sets from PATCH_REF, applied only to targets older than it:
-#   PATCH_FILES  — OVERWRITE. Files that exist in the target but are broken there:
-#     SummingSortedBlockInputStream uses a recursive generic lambda that this era's
-#     gcc-5 accepted but a modern gcc-5 rejects; it was rewritten by PATCH_REF. Must
-#     replace the target's copy. (SummingMergeTree is unused by the benchmark, so a
-#     newer copy on a newer target is harmless.)
+#   PATCH_COND_* — CONDITIONAL OVERWRITE. SummingSortedBlockInputStream: only the
+#     ~2015-06..2015-11 copies use a recursive generic lambda (decltype(auto)) that a
+#     modern gcc-5 rejects; older and newer copies compile as-is and match their own
+#     era's caller (the ctor signature differs across eras). So overwrite it from
+#     PATCH_REF only when the target's own copy actually contains that construct.
 #   PATCH_FILL   — FILL, only when ABSENT in the target. The statdaemons-library
 #     components (Stopwatch, pools, HLL, Increment, the uniq/quantile algorithms,
 #     …) that pre-2015-11 trees pulled from the external <statdaemons/*>; they were
 #     inlined in-repo at the 2015-10 -> 2015-11 boundary. Filling only-if-missing
 #     means newer, self-contained trees keep their own copies (no downgrade).
 #     reconstruct.sh forwards the old <statdaemons/...> paths to them.
-ARG PATCH_FILES="dbms/include/DB/DataStreams/SummingSortedBlockInputStream.h dbms/src/DataStreams/SummingSortedBlockInputStream.cpp"
+ARG PATCH_COND_H=dbms/include/DB/DataStreams/SummingSortedBlockInputStream.h
+ARG PATCH_COND_CPP=dbms/src/DataStreams/SummingSortedBlockInputStream.cpp
 ARG PATCH_FILL="dbms/include/DB/AggregateFunctions/UniquesHashSet.h dbms/include/DB/AggregateFunctions/ReservoirSampler.h dbms/include/DB/AggregateFunctions/ReservoirSamplerDeterministic.h dbms/include/DB/Common/Stopwatch.h dbms/include/DB/Common/ConfigProcessor.h dbms/include/DB/Common/PoolBase.h dbms/include/DB/Common/PoolWithFailoverBase.h dbms/include/DB/Common/OptimizedRegularExpression.h dbms/include/DB/Common/OptimizedRegularExpression.inl dbms/include/DB/Common/HTMLForm.h dbms/include/DB/Common/AIO.h dbms/include/DB/Common/HyperLogLogCounter.h dbms/include/DB/Common/HyperLogLogBiasEstimator.h dbms/include/DB/Common/CompactArray.h dbms/include/DB/Common/NetException.h dbms/src/Common/ConfigProcessor.cpp libs/libcommon/include/common/threadpool.hpp dbms/include/DB/Common/Increment.h dbms/include/DB/Common/CounterInFile.h dbms/include/DB/Common/SimpleCache.h"
 ARG TAG
 RUN git init -q /src && cd /src \
@@ -74,8 +75,10 @@ RUN git init -q /src && cd /src \
  && (git checkout FETCH_HEAD -- libs/libcommon 2>/dev/null || true) \
  && if [ "${PATCH_REF}" != "${TAG}" ]; then \
         git fetch -q --depth 1 origin "${PATCH_REF}"; \
-        for f in ${PATCH_FILES}; do (git checkout FETCH_HEAD -- "$f" 2>/dev/null || true); done; \
         for f in ${PATCH_FILL};  do [ -e "$f" ] || (git checkout FETCH_HEAD -- "$f" 2>/dev/null || true); done; \
+        if grep -q 'decltype(auto)' "${PATCH_COND_H}" 2>/dev/null; then \
+            git checkout FETCH_HEAD -- "${PATCH_COND_H}" "${PATCH_COND_CPP}" 2>/dev/null || true; \
+        fi; \
     fi
 
 # Reconcile the donor build system with the older source (globs, stubs, shims).

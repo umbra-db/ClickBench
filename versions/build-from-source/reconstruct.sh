@@ -471,6 +471,20 @@ namespace ext
 }
 EOF
 fi
+# statdaemons/stdext.h: the pre-2015 trees get make_unique from stdext::make_unique
+# (the earlier name for ext::make_unique). Vendor the same thin make_unique.
+if [ ! -e contrib/statdaemons-compat/statdaemons/stdext.h ]; then
+    cat > contrib/statdaemons-compat/statdaemons/stdext.h <<'EOF'
+#pragma once
+#include <memory>
+#include <utility>
+namespace stdext
+{
+    template <typename T, typename... Args>
+    std::unique_ptr<T> make_unique(Args &&... args) { return std::unique_ptr<T>(new T(std::forward<Args>(args)...)); }
+}
+EOF
+fi
 
 # -- Yandex/ -> common/: the old include prefix for the common utilities that the
 #    donor renamed to common/ (e.g. <Yandex/Common.h> == <common/Common.h>).
@@ -483,6 +497,43 @@ if [ -d libs/libcommon/include/common ]; then
     # from the generated revision.h); just declare it so the include resolves.
     [ -e libs/libcommon/include/common/Revision.h ] || \
         printf '#pragma once\nnamespace Revision { unsigned get(); }\n' > libs/libcommon/include/common/Revision.h
+    # Yandex/time2str.h: external time helpers the donor folded into DateLUT. The only
+    # ones used by compiled (non-Server, non-test) code are the MergeTree part-naming
+    # helpers Date2OrderedIdentifier / OrderedIdentifier2Date; implement them via
+    # DateLUT so they stay consistent with the DateLUT the callers use.
+    if [ ! -e libs/libcommon/include/common/time2str.h ]; then
+        cat > libs/libcommon/include/common/time2str.h <<'EOF'
+#pragma once
+#include <string>
+#include <ctime>
+#include <cstdlib>
+#include <cstdio>
+#include <common/DateLUT.h>
+/// Helpers from the external Yandex/time2str.h, reimplemented via DateLUT so they
+/// stay consistent with the DateLUT the callers use. Date2OrderedIdentifier /
+/// OrderedIdentifier2Date drive MergeTree part naming (must be correct); Time2Date /
+/// Date2Str are used only by the legacy OLAP server code.
+inline unsigned Date2OrderedIdentifier(time_t time)
+{
+    return DateLUT::instance().toNumYYYYMMDD(time);
+}
+inline time_t OrderedIdentifier2Date(const std::string & str)
+{
+    return DateLUT::instance().YYYYMMDDToDate(static_cast<unsigned>(std::strtoul(str.c_str(), nullptr, 10)));
+}
+inline time_t Time2Date(time_t time)
+{
+    return DateLUT::instance().toDate(time);
+}
+inline std::string Date2Str(time_t date)
+{
+    const auto & lut = DateLUT::instance();
+    char buf[16];
+    std::snprintf(buf, sizeof(buf), "%04u-%02u-%02u", lut.toYear(date), lut.toMonth(date), lut.toDayOfMonth(date));
+    return std::string(buf);
+}
+EOF
+    fi
 fi
 
 # -- double-conversion: the old code includes <src/double-conversion.h>; the
