@@ -42,6 +42,25 @@ new_syntax() {
     fi
 }
 
+# The prehistoric monthly reconstructions are labeled by month (YYYY-MM-01) and all
+# report version 0.0.<rev>, so they can't be classified by version number. Their engine
+# support (probed empirically across the reconstructed images) falls into tiers:
+#   2012-04 .. 2012-12  MergeTree is non-functional     -> ENGINE = Log
+#   2013-01 .. 2014-03  MergeTree needs a mandatory       -> MergeTree(date, <sample>,
+#                       sampling expression                             (key,<sample>), 8192)
+#   2014-04 and later   plain positional MergeTree works -> MergeTree(date,(key),8192)
+# (2012-04/05 additionally have no scriptable client, so they will load nothing regardless;
+# Log is emitted for them for consistency.) Echoes the tier, or "" for non-prehistoric
+# versions (handled by new_syntax above).
+prehistoric_tier() {
+    [[ "$VERSION" =~ ^([0-9]{4})-([0-9]{2})-[0-9]{2}$ ]] || { echo ""; return; }
+    local ym="${BASH_REMATCH[1]}${BASH_REMATCH[2]}"
+    if   [ "$ym" -le 201212 ]; then echo log
+    elif [ "$ym" -le 201403 ]; then echo legacy_sample
+    else                            echo legacy_plain
+    fi
+}
+
 # `customer` exists in both TPC-H and TPC-DS with different schemas, so it is
 # disambiguated by dataset (and its columns file is dataset-qualified below).
 if [ "$TABLE" = "customer" ]; then
@@ -113,18 +132,39 @@ COLUMNS_FILE="${HERE}/schema/${DATASET}_${TABLE}.columns"
 COLUMNS="$(cat "${COLUMNS_FILE}")"
 
 echo "DROP TABLE IF EXISTS ${TABLE};"
-if new_syntax; then
+TIER="$(prehistoric_tier)"
+if [ "${TIER}" = "log" ]; then
+    # MergeTree not usable this early: Log has no primary key / no parts (so no data_size
+    # metric), but loads and scans fine for the queries.
     cat <<SQL
 CREATE TABLE ${TABLE}
 (
 ${COLUMNS}
-) ENGINE = MergeTree PARTITION BY toYYYYMM(${DATE_COL}) ORDER BY (${ORDER_KEY});
+) ENGINE = Log;
+SQL
+elif [ "${TIER}" = "legacy_sample" ]; then
+    # Early MergeTree required a sampling expression as the 2nd positional argument, and it
+    # must appear in the primary key. Use a universal date-based one (the day number hashed),
+    # since we never actually SAMPLE -- it only has to be a valid unsigned expression.
+    SAMPLE="intHash32(toUInt32(${DATE_COL}))"
+    cat <<SQL
+CREATE TABLE ${TABLE}
+(
+${COLUMNS}
+) ENGINE = MergeTree(${DATE_COL}, ${SAMPLE}, (${ORDER_KEY}, ${SAMPLE}), 8192);
+SQL
+elif [ "${TIER}" = "legacy_plain" ] || ! new_syntax; then
+    cat <<SQL
+CREATE TABLE ${TABLE}
+(
+${COLUMNS}
+) ENGINE = MergeTree(${DATE_COL}, (${ORDER_KEY}), 8192);
 SQL
 else
     cat <<SQL
 CREATE TABLE ${TABLE}
 (
 ${COLUMNS}
-) ENGINE = MergeTree(${DATE_COL}, (${ORDER_KEY}), 8192);
+) ENGINE = MergeTree PARTITION BY toYYYYMM(${DATE_COL}) ORDER BY (${ORDER_KEY});
 SQL
 fi
