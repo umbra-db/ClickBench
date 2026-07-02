@@ -28,6 +28,10 @@
             --summary-every-other-row-color: #F8F8F8;
             --highlight-color: #EEE;
             --bar-color: #FFCB80;
+            --bar-color1: oklch(calc(0.9 - 0.6) 0.1 calc(90 - 60));
+            --bar-color2: oklch(calc(0.9 - 0.4) 0.1 calc(90 - 40));
+            --bar-color3: oklch(calc(0.9 - 0.1) 0.1 calc(90 - 20));
+            --bar-color4: oklch(0.9 0.1 90);
 
             --tooltip-text-color: white;
             --tooltip-background-color: black;
@@ -54,6 +58,10 @@
             --summary-every-other-row-color: #042e41;
             --highlight-color: #064663;
             --bar-color: #088;
+            --bar-color1: oklch(calc(0.4 + 0.6) 0.1 calc(250 - 180));
+            --bar-color2: oklch(calc(0.4 + 0.4) 0.1 calc(250 - 120));
+            --bar-color3: oklch(calc(0.4 + 0.2) 0.1 calc(250 - 60));
+            --bar-color4: oklch(0.4 0.1 250);
 
             --tooltip-text-color: white;
             --tooltip-background-color: #444;
@@ -149,12 +157,27 @@
 
         .summary-bar-cell {
             width: 100%;
+            position: relative;
         }
 
         .summary-bar {
             height: 1rem;
-            background: var(--bar-color);
+            width: 100%;
             border-radius: 0 0.2rem 0.2rem 0;
+        }
+
+        .summary-date {
+            position: absolute;
+            right: 0.5rem;
+            top: 0;
+            bottom: 0;
+            display: flex;
+            align-items: center;
+            font-size: 80%;
+            -webkit-text-stroke: 2px var(--background-color);
+            paint-order: stroke fill;
+            pointer-events: none;
+            font-family: monospace;
         }
 
         .summary-number {
@@ -294,10 +317,6 @@
             padding-top: 4px;
             padding-bottom: 4px;
         }
-        td.metric-cell { font-size: 80%; white-space: nowrap; text-align: right; line-height: 1.2; }
-        td.metric-cell .metric-load { opacity: 0.85; }
-        td.metric-cell .metric-size { opacity: 0.65; }
-        tr.total-row td { font-weight: bold; background-color: rgba(128, 128, 128, 0.10); }
         .dataset-name { text-transform: uppercase; letter-spacing: 0.03em; }
     </style>
     <script type="text/javascript" src="data.generated.js"></script>
@@ -361,14 +380,6 @@
     <tbody id="details_body">
     </tbody>
 </table>
-
-<div class="comments">
-<p>The same benchmark run on the same data across the whole history of ClickHouse versions, to show how performance evolved over the years. It combines several datasets and query sets: MgBench, the Star Schema Benchmark, ClickBench (the "hits" web-analytics dataset), the UK property price paid dataset, the airline OnTime dataset, the New York taxi rides benchmark, a coffee-shop sales dataset, TPC-H, TPC-DS, and the Join Order Benchmark (JOB).</p>
-<p>Every version is packaged as a Docker image and runs the identical set of queries over the identical (Native-format) data. Versions with no published image — down to the earliest 2013–2016 snapshots — are reconstructed and built from source (see <a href="https://github.com/ClickHouse/ClickBench/tree/main/versions/build-from-source">build-from-source</a>). Very old versions predate <code>SELECT version()</code> and report their revision as <code>0.0.&lt;revision&gt;</code>.</p>
-<p>"Cold Run" is the first run of a query (cold OS/page cache dropped between queries); "Hot Run" is the fastest of the subsequent runs. A query that failed or is unsupported on a version is shown as ☠ and penalised in the relative-time summary. Per-dataset load time (sum of the load of that dataset's tables) and on-disk data size are shown in the dataset header rows.</p>
-<p>Star Schema Benchmark: Patrick O'Neil, Elizabeth O'Neil and Xuedong Chen, "The Star Schema Benchmark", January 2007. <a href="http://www.cs.umb.edu/~poneil/StarSchemaB.pdf">http://www.cs.umb.edu/~poneil/StarSchemaB.pdf</a></p>
-<p>1.1 Billion Taxi Rides Benchmarks: Mark Litwintschik. <a href="https://tech.marksblogg.com/benchmarks.html">https://tech.marksblogg.com/benchmarks.html</a></p>
-</div>
 
 <script type="text/javascript">
 
@@ -531,7 +542,9 @@ function renderSummary(filtered_data, baseline_data) {
 
     let summaries = filtered_data.map(elem => {
         const all_timings = elem.result.map(selectRun).filter(x => x !== null);
-        const fallback_timing = missing_result_penalty * Math.max(missing_result_time, ...(all_timings.length ? all_timings : [0]));
+        /// An absent (failed / unsupported) result counts as 2× this version's own worst
+        /// query time; if the version produced no result at all, fall back to a constant.
+        const fallback_timing = all_timings.length ? missing_result_penalty * Math.max(...all_timings) : missing_result_time;
         let accumulator = 0, used = 0;
         for (let i = 0; i < num_queries; ++i) {
             if (!any_enabled || queryEnabled(i)) {
@@ -545,8 +558,14 @@ function renderSummary(filtered_data, baseline_data) {
         return used ? Math.exp(accumulator / used) : 1;
     });
 
-    const sorted_indices = [...summaries.keys()].sort((a, b) => summaries[a] - summaries[b]);
-    const max_ratio = summaries[sorted_indices[sorted_indices.length - 1]];
+    /// Both the summary chart and the details table are ordered by version date, latest
+    /// first (not by result). max_ratio still scales the horizon bars to the slowest.
+    const sorted_indices = [...filtered_data.keys()].sort((a, b) => {
+        const da = filtered_data[a].release_date || '', db = filtered_data[b].release_date || '';
+        if (da != db) { return da < db ? 1 : -1; }
+        return filtered_data[b].version.localeCompare(filtered_data[a].version, undefined, { numeric: true });
+    });
+    const max_ratio = Math.max(...summaries);
 
     sorted_indices.map(idx => {
         const elem = filtered_data[idx];
@@ -557,10 +576,9 @@ function renderSummary(filtered_data, baseline_data) {
         let td_name = document.createElement('td');
         td_name.className = 'summary-name';
         let link = document.createElement('a');
-        link.appendChild(document.createTextNode(`${elem.version}`));
+        link.appendChild(document.createTextNode(displayVersion(elem.version)));
         link.href = "https://github.com/ClickHouse/ClickBench/blob/main/versions/" + elem.source;
         td_name.appendChild(link);
-        if (elem.release_date) { td_name.appendChild(addNote(`released ${elem.release_date}` + (elem.actual_version && elem.actual_version != elem.version ? `, server reports ${elem.actual_version}` : ''))); }
         td_name.appendChild(document.createTextNode(': '));
 
         const ratio = summaries[idx];
@@ -568,12 +586,34 @@ function renderSummary(filtered_data, baseline_data) {
         td_number.className = 'summary-number';
         td_number.appendChild(document.createTextNode(`×${ratio.toFixed(2)}`));
 
+        /// Horizon (multi-scale) bar, ported from the main ClickBench page: the same
+        /// value is drawn at 1×, 10×, 100×, 1000× zoom in four colour bands, so small
+        /// differences near the fast end stay visible across a wide dynamic range.
+        const percentage = ratio / max_ratio * 100;
         let td_bar = document.createElement('td');
         td_bar.className = 'summary-bar-cell';
         let bar = document.createElement('div');
         bar.className = 'summary-bar';
-        bar.style.width = `${summaries[idx] / max_ratio * 100}%`;
+        bar.style.background = `linear-gradient(to right,
+            var(--bar-color1) 0%,
+            var(--bar-color1) ${Math.min(100, percentage)}%,
+            var(--bar-color2) ${Math.min(100, percentage)}%,
+            var(--bar-color2) ${Math.min(100, percentage * 10)}%,
+            var(--bar-color3) ${Math.min(100, percentage * 10)}%,
+            var(--bar-color3) ${Math.min(100, percentage * 100)}%,
+            var(--bar-color4) ${Math.min(100, percentage * 100)}%,
+            var(--bar-color4) ${Math.min(100, percentage * 1000)}%,
+            transparent ${Math.min(100, percentage * 1000)}%,
+            transparent 100%)`;
         td_bar.appendChild(bar);
+
+        /// Release date shown over the bar, as on the main ClickBench page.
+        if (elem.release_date) {
+            let date_span = document.createElement('span');
+            date_span.className = 'summary-date';
+            date_span.textContent = elem.release_date;
+            td_bar.appendChild(date_span);
+        }
 
         tr.appendChild(td_name);
         tr.appendChild(td_bar);
@@ -598,18 +638,11 @@ function colorize(elem, ratio) {
     if (ratio == 1) { elem.style.fontWeight = 'bold'; }
 }
 
-/// A cell showing this dataset's load time and data size for one version.
-function metricCell(elem, ds) {
-    let td = document.createElement('td');
-    td.className = 'metric-cell';
-    const lt = elem.load_time ? elem.load_time[ds] : null;
-    const sz = elem.data_size ? elem.data_size[ds] : null;
-    let load = document.createElement('div'); load.className = 'metric-load';
-    load.appendChild(document.createTextNode(formatTime(lt)));
-    let size = document.createElement('div'); size.className = 'metric-size';
-    size.appendChild(document.createTextNode(formatSize(sz)));
-    td.appendChild(load); td.appendChild(size);
-    return td;
+/// Calendar versions (18.x onwards, e.g. 20.4.9.110) are shown as major.minor only
+/// (20.4); the old 1.1.54xxx scheme, dates, and bare revisions are shown in full.
+function displayVersion(v) {
+    const m = v.match(/^(\d+)\.(\d+)\./);
+    return (m && +m[1] >= 18) ? `${m[1]}.${m[2]}` : v;
 }
 
 function render() {
@@ -637,27 +670,16 @@ function render() {
 
     const sorted_indices = renderSummary(filtered_data, baseline_data);
 
-    /// Details header: global query checkbox, label column, then a column per version.
-    {
-        let th_checkbox = document.createElement('th');
-        let checkbox = document.createElement('input');
-        checkbox.type = 'checkbox';
-        checkbox.checked = selectors.queries.every(x => x);
-        checkbox.addEventListener('change', e => {
-            selectors.queries = selectors.queries.map(() => e.target.checked);
-            render(); updateHistory();
-        });
-        th_checkbox.appendChild(checkbox);
-        details_head.appendChild(th_checkbox);
-        details_head.appendChild(document.createElement('th'));
-    }
+    /// Details header: two label columns (checkbox + name), then a column per version.
+    details_head.appendChild(document.createElement('th'));
+    details_head.appendChild(document.createElement('th'));
     sorted_indices.map(idx => {
         const elem = filtered_data[idx];
         let th = document.createElement('th');
         th.className = 'th-entry';
         th.dataset.version = elem.version;
         let name = document.createElement('div');
-        name.appendChild(document.createTextNode(`${elem.version}`));
+        name.appendChild(document.createTextNode(displayVersion(elem.version)));
         th.appendChild(name);
         if (elem.release_date) {
             let d = document.createElement('div');
@@ -669,59 +691,80 @@ function render() {
     });
 
     const enabled_datasets = datasets.filter(d => selectors.dataset[d.name]);
+    const label_span = sorted_indices.length + 1;   // name cell spans the label + version columns
 
-    /// Total row: summed load time and total data size over the enabled datasets.
-    {
+    /// A separator/header row: a checkbox in column 1 (so the Total and per-dataset
+    /// checkboxes line up vertically) and a name spanning the rest of the row.
+    function separatorRow(name, checked, onToggle) {
         let tr = document.createElement('tr');
-        tr.className = 'total-row';
-        let td_label = document.createElement('td');
-        td_label.colSpan = 2;
-        td_label.appendChild(document.createTextNode('Total (load time / data size)'));
-        tr.appendChild(td_label);
-        sorted_indices.map(idx => {
-            const elem = filtered_data[idx];
-            let load_sum = 0, size_sum = 0, have = false;
-            enabled_datasets.forEach(d => {
-                if (elem.load_time && elem.load_time[d.name] != null) { load_sum += elem.load_time[d.name]; have = true; }
-                if (elem.data_size && elem.data_size[d.name] != null) { size_sum += elem.data_size[d.name]; have = true; }
-            });
+        tr.className = 'dataset-header';
+        let td_check = document.createElement('td');
+        let cb = document.createElement('input');
+        cb.type = 'checkbox';
+        cb.checked = checked;
+        cb.addEventListener('change', e => onToggle(e.target.checked));
+        td_check.appendChild(cb);
+        tr.appendChild(td_check);
+        let td_name = document.createElement('td');
+        td_name.colSpan = label_span;
+        let nm = document.createElement('span');
+        nm.className = 'dataset-name';
+        nm.appendChild(document.createTextNode(name));
+        td_name.appendChild(nm);
+        tr.appendChild(td_name);
+        details_body.appendChild(tr);
+    }
+
+    /// A regular metric row (Load time / Data size), colorized against the best value,
+    /// like the main ClickBench page. `values` is aligned to sorted_indices.
+    function metricRow(label, values, fmt) {
+        const base = Math.min(...values.filter(x => x != null && x > 0));
+        let tr = document.createElement('tr');
+        tr.className = 'shadow';
+        tr.appendChild(document.createElement('td'));   // empty checkbox column
+        let td_title = document.createElement('td');
+        td_title.className = 'note';
+        td_title.appendChild(document.createTextNode(label));
+        tr.appendChild(td_title);
+        values.forEach(v => {
+            const ratio = (v != null && isFinite(base) && base > 0) ? v / base : null;
             let td = document.createElement('td');
-            td.className = 'metric-cell';
-            let l = document.createElement('div'); l.className = 'metric-load';
-            l.appendChild(document.createTextNode(have ? formatTime(load_sum) : '—'));
-            let s = document.createElement('div'); s.className = 'metric-size';
-            s.appendChild(document.createTextNode(have ? formatSize(size_sum) : '—'));
-            td.appendChild(l); td.appendChild(s);
+            td.appendChild(document.createTextNode(v != null ? `${fmt(v)} (×${(ratio ?? 1).toFixed(2)})` : '—'));
+            colorize(td, ratio);
             tr.appendChild(td);
         });
         details_body.appendChild(tr);
     }
 
-    /// Per-dataset sections: a header row (name + per-version load/size), then query rows.
-    const num_cols = sorted_indices.length + 2;
+    /// Total section: the "Total" checkbox toggles all queries and lines up in column 1
+    /// with the per-dataset checkboxes. Load time is summed and data size totalled over
+    /// the enabled datasets.
+    separatorRow('Total', selectors.queries.every(x => x), checked => {
+        selectors.queries = selectors.queries.map(() => checked);
+        render(); updateHistory();
+    });
+    metricRow('Load time', sorted_indices.map(idx => {
+        const e = filtered_data[idx]; let s = null;
+        enabled_datasets.forEach(d => { if (e.load_time && e.load_time[d.name] != null) s = (s ?? 0) + e.load_time[d.name]; });
+        return s;
+    }), formatTime);
+    metricRow('Data size', sorted_indices.map(idx => {
+        const e = filtered_data[idx]; let s = null;
+        enabled_datasets.forEach(d => { if (e.data_size && e.data_size[d.name] != null) s = (s ?? 0) + e.data_size[d.name]; });
+        return s;
+    }), formatSize);
+
+    /// Per-dataset sections: a header/separator row (its checkbox toggles that dataset's
+    /// queries), then a Load time and a Data size row, then the query rows.
     enabled_datasets.forEach(d => {
         const { start, end } = dataset_range[d.name];
 
-        let hdr = document.createElement('tr');
-        hdr.className = 'dataset-header';
-        let td_name = document.createElement('td');
-        td_name.colSpan = 2;
-        let dscheck = document.createElement('input');
-        dscheck.type = 'checkbox';
-        dscheck.checked = selectors.queries.slice(start, end).every(x => x);
-        dscheck.title = 'toggle all queries of this dataset';
-        dscheck.addEventListener('change', e => {
-            for (let i = start; i < end; ++i) { selectors.queries[i] = e.target.checked; }
+        separatorRow(d.name, selectors.queries.slice(start, end).every(x => x), checked => {
+            for (let i = start; i < end; ++i) { selectors.queries[i] = checked; }
             render(); updateHistory();
         });
-        td_name.appendChild(dscheck);
-        let nm = document.createElement('span');
-        nm.className = 'dataset-name';
-        nm.appendChild(document.createTextNode(' ' + d.name));
-        td_name.appendChild(nm);
-        hdr.appendChild(td_name);
-        sorted_indices.map(idx => hdr.appendChild(metricCell(filtered_data[idx], d.name)));
-        details_body.appendChild(hdr);
+        metricRow('Load time', sorted_indices.map(idx => (filtered_data[idx].load_time || {})[d.name] ?? null), formatTime);
+        metricRow('Data size', sorted_indices.map(idx => (filtered_data[idx].data_size || {})[d.name] ?? null), formatSize);
 
         for (let query_num = start; query_num < end; ++query_num) {
             let tr = document.createElement('tr');
