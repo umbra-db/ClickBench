@@ -75,13 +75,16 @@ echo "resolved to ${VERSION} (${image})"
 # a genuine error.
 tag="-"; gcc="5"
 if [[ "${image}" == clickhouse-built:* ]]; then
-    read -r tag gcc < <(awk -F'\t' -v v="${VERSION}" '$1==v{print $2, ($4==""?5:$4)}' build-from-source/versions.txt)
-    if [ -z "${tag}" ]; then
-        if awk -F'\t' -v v="${VERSION}" '$1==v{f=1} END{exit !f}' build-from-source/monthly.tsv; then
-            tag="-"; gcc="5"   # monthly reconstruction: run-version.sh rebuilds it from monthly.tsv
-        else
-            echo "no build recipe for ${VERSION} in versions.txt or monthly.tsv" >&2; exit 1
-        fi
+    # Look the recipe up via command substitution, not `read < <(...)`: with `set -e`, read
+    # hitting EOF (version absent from versions.txt, e.g. a monthly build) returns non-zero
+    # and would abort the script before the monthly.tsv fallback below.
+    recipe="$(awk -F'\t' -v v="${VERSION}" '$1==v{print $2, ($4==""?5:$4)}' build-from-source/versions.txt)"
+    if [ -n "${recipe}" ]; then
+        read -r tag gcc <<<"${recipe}"
+    elif awk -F'\t' -v v="${VERSION}" '$1==v{f=1} END{exit !f}' build-from-source/monthly.tsv; then
+        tag="-"; gcc="5"   # monthly reconstruction: run-version.sh rebuilds it from monthly.tsv
+    else
+        echo "no build recipe for ${VERSION} in versions.txt or monthly.tsv" >&2; exit 1
     fi
 fi
 
