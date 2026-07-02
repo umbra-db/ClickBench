@@ -467,7 +467,11 @@ emit_load_time_json() {
 # {"dataset": on_disk_bytes, ...}: per-database sum of bytes_on_disk (each dataset
 # is its own database), or a data-directory measurement for versions without it.
 emit_data_size_json() {
-    local out
+    local out loaded
+    # Only report a data size for datasets that actually loaded (recorded a load time).
+    # A dataset with no load time is treated as not loaded, so its size is omitted
+    # (null on the page) rather than reporting an empty/partial directory.
+    loaded=" $(awk -F'\t' '{print $1}' "${LOAD_STATS}" 2>/dev/null | sort -u | tr '\n' ' ')"
     out=$(client --query "SELECT database, sum(bytes_on_disk) FROM system.parts WHERE database NOT IN ('system', 'information_schema', 'INFORMATION_SCHEMA') GROUP BY database FORMAT TabSeparated" </dev/null 2>/dev/null)
     if [ -z "${out}" ]; then
         out=$(sudo docker exec "${CONTAINER}" sh -c '
@@ -476,7 +480,7 @@ emit_data_size_json() {
                 [ "$db" = system ] && continue
                 printf "%s\t%s\n" "$db" "$(du -sLb "$d" 2>/dev/null | cut -f1)"; done' 2>/dev/null)
     fi
-    printf '%s' "${out}" | awk -F'\t' 'BEGIN{printf "{"} NF>=2 && $2!=""{printf "%s\"%s\": %s",(n++?", ":""),$1,$2} END{printf "}"}'
+    printf '%s' "${out}" | awk -F'\t' -v loaded="${loaded}" 'BEGIN{printf "{"} NF>=2 && $2!="" && index(loaded, " "$1" ")>0 {printf "%s\"%s\": %s",(n++?", ":""),$1,$2} END{printf "}"}'
 }
 
 # Release date of this version, for the result JSON. list-versions.sh already

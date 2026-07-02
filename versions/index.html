@@ -203,6 +203,12 @@
             white-space: nowrap;
         }
 
+        #scale_hint {
+            font-weight: normal;
+            font-size: 80%;
+            filter: contrast(10%);
+        }
+
         th {
             padding-bottom: 0.5rem;
         }
@@ -224,6 +230,34 @@
         #details th {
             vertical-align: bottom;
             white-space: pre;
+            position: sticky;
+            top: 0;
+            background-color: var(--background-color);
+            z-index: 2;
+        }
+
+        /* Keep the two left columns (checkbox + query number / label) pinned to the
+           left, and the version/date header row pinned to the top, while scrolling the
+           wide table. The top-left corner cells need the highest z-index. */
+        #details td:nth-child(1), #details td:nth-child(2) {
+            position: sticky;
+            background-color: var(--background-color);
+            z-index: 1;
+        }
+        #details th:nth-child(1), #details th:nth-child(2) {
+            z-index: 3;
+        }
+        #details td:nth-child(1), #details th:nth-child(1) {
+            left: 0;
+            width: 2.5rem;
+            min-width: 2.5rem;
+        }
+        #details td:nth-child(2), #details th:nth-child(2) {
+            left: 2.5rem;
+        }
+        /* Preserve the dataset-header band colour on the sticky left cells. */
+        #details tr.dataset-header td {
+            background-color: rgba(128, 128, 128, 0.18);
         }
 
         #details td {
@@ -276,7 +310,7 @@
             margin-left: -3rem;
         }
 
-        .note:hover .tooltip {
+        .note:hover .tooltip, .note:active .tooltip {
             visibility: visible;
         }
 
@@ -375,7 +409,8 @@
                 version
             </th>
             <th colspan="2">
-                Relative time (lower is better)
+                Relative time (lower is better).<br/>
+                <span id="scale_hint"></span>
             </th>
         </tr>
     </thead>
@@ -796,7 +831,12 @@ function render() {
             render(); updateHistory();
         });
         metricRow('Load time', sorted_indices.map(idx => (filtered_data[idx].load_time || {})[d.name] ?? null), formatTime);
-        metricRow('Data size', sorted_indices.map(idx => (filtered_data[idx].data_size || {})[d.name] ?? null), formatSize);
+        /// If the dataset has no load time it was not loaded, so treat its data size as
+        /// null too (an empty/partial directory would otherwise report a bogus size).
+        metricRow('Data size', sorted_indices.map(idx => {
+            const e = filtered_data[idx];
+            return (e.load_time && e.load_time[d.name] != null && e.data_size) ? (e.data_size[d.name] ?? null) : null;
+        }), formatSize);
 
         for (let query_num = start; query_num < end; ++query_num) {
             let tr = document.createElement('tr');
@@ -931,6 +971,9 @@ if (window.location.hash) {
         if (restored && restored.queries && restored.queries.length == num_queries) { selectors = restored; }
     } catch {}
 }
+
+document.getElementById('scale_hint').textContent =
+    'Different colors on the bar chart represent the same values shown at different scales (1x, 10x, 100x zoom).';
 
 render();
 updateSelectors();
