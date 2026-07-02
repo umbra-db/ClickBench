@@ -421,6 +421,27 @@ EOF
     printf '// minimal daemon base (see reconstruct.sh)\n' > libs/libdaemon/src/BaseDaemon.cpp
 fi
 echo '#pragma once' > contrib/statdaemons-compat/statdaemons/Interests.h
+# CategoriesHierarchy: a Metrica embedded dictionary the donor dropped (so the
+# auto-map can't forward it). The benchmark never loads category dictionaries, so a
+# no-op stub with the small interface Dictionaries.h / FunctionsDictionaries.h use is
+# enough (templated methods avoid depending on the era's integer typedefs). Created
+# only if the auto-map didn't already forward a real one.
+if [ ! -e contrib/statdaemons-compat/statdaemons/CategoriesHierarchy.h ]; then
+    cat > contrib/statdaemons-compat/statdaemons/CategoriesHierarchy.h <<'EOF'
+#pragma once
+/// Stub for the never-vendored Metrica category hierarchy (unused by the benchmark).
+class CategoriesHierarchy
+{
+public:
+    CategoriesHierarchy() {}
+    void reload() {}
+    template <typename T> T toParent(T x) const { return x; }
+    template <typename T> T toMostAncestor(T x) const { return x; }
+    template <typename T> T toSecondLevel(T x) const { return x; }
+    template <typename T> bool in(T, T) const { return false; }
+};
+EOF
+fi
 
 # The auto-map above only handles <statdaemons/X.h>; the pre-2015-11 trees also
 # pull <statdaemons/threadpool.hpp> and <statdaemons/ext/*.hpp> (.hpp / a subdir).
@@ -434,6 +455,21 @@ if [ -d libs/libcommon/include/ext ]; then
         [ -f "$h" ] || continue; base="$(basename "$h")"
         printf '#pragma once\n#include <ext/%s>\n' "$base" > "contrib/statdaemons-compat/statdaemons/ext/${base}"
     done
+fi
+# ext/memory.hpp provided ext::make_unique before C++14's std::make_unique; the old
+# statdaemons ext/ had it, the donor dropped it. Vendor it if not already forwarded.
+if [ ! -e contrib/statdaemons-compat/statdaemons/ext/memory.hpp ]; then
+    mkdir -p contrib/statdaemons-compat/statdaemons/ext
+    cat > contrib/statdaemons-compat/statdaemons/ext/memory.hpp <<'EOF'
+#pragma once
+#include <memory>
+#include <utility>
+namespace ext
+{
+    template <typename T, typename... Args>
+    std::unique_ptr<T> make_unique(Args &&... args) { return std::unique_ptr<T>(new T(std::forward<Args>(args)...)); }
+}
+EOF
 fi
 
 # -- Yandex/ -> common/: the old include prefix for the common utilities that the
