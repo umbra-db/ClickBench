@@ -904,16 +904,51 @@ inline DB::UInt64 intHashCRC32(DB::UInt64 x)
 	return crc;
 }
 IHEOF
-    if [ ! -e dbms/include/DB/Common/HashTable/HashTableAllocator.h ] \
-       && [ -e dbms/include/DB/Common/HashTableAllocator.h ]; then
-        {
-            printf '#pragma once\n#include <DB/Common/HashTableAllocator.h>\n'
-            # This era keeps the allocators in namespace DB, but the back-ported
-            # UniquesHashSet.h (which is at global scope) refers to
+    # The back-ported UniquesHashSet.h also needs <DB/Common/HashTable/HashTableAllocator.h>,
+    # providing a global HashTableAllocatorWithStackMemory<N>. Two eras:
+    if [ ! -e dbms/include/DB/Common/HashTable/HashTableAllocator.h ]; then
+        if [ -e dbms/include/DB/Common/HashTableAllocator.h ]; then
+            # 2014-03/04: the flat header exists but keeps the allocators in namespace
+            # DB, while the (global) back-ported UniquesHashSet refers to
             # HashTableAllocatorWithStackMemory unqualified -- later eras exposed it as a
-            # global alias. Hoist both allocator templates to global scope.
-            printf 'using DB::HashTableAllocator;\nusing DB::HashTableAllocatorWithStackMemory;\n'
-        } > dbms/include/DB/Common/HashTable/HashTableAllocator.h
+            # global alias. Forward to the flat header and hoist both to global scope.
+            {
+                printf '#pragma once\n#include <DB/Common/HashTableAllocator.h>\n'
+                printf 'using DB::HashTableAllocator;\nusing DB::HashTableAllocatorWithStackMemory;\n'
+            } > dbms/include/DB/Common/HashTable/HashTableAllocator.h
+        else
+            # 2014-02 and older: no HashTableAllocator exists anywhere (uniq() used the
+            # external stats library's own allocation). Provide a self-contained,
+            # malloc-backed global allocator exposing exactly the surface the
+            # back-ported UniquesHashSet uses (alloc/free/realloc). We skip the
+            # small-object stack optimization the real one had -- it changes only
+            # performance, not results, which is immaterial for uniq() correctness.
+            cat > dbms/include/DB/Common/HashTable/HashTableAllocator.h <<'HAEOF'
+#pragma once
+// Added by reconstruct.sh: minimal malloc-backed HashTableAllocator for pre-2014-03
+// trees that ship no allocator at all, matching the surface the back-ported
+// UniquesHashSet.h uses. Global scope (UniquesHashSet refers to it unqualified).
+#include <cstdlib>
+#include <cstring>
+
+class HashTableAllocator
+{
+public:
+	void * alloc(size_t size) { return ::calloc(size, 1); }
+	void free(void * buf, size_t) { ::free(buf); }
+	void * realloc(void * buf, size_t old_size, size_t new_size)
+	{
+		buf = ::realloc(buf, new_size);
+		if (new_size > old_size)
+			memset(reinterpret_cast<char *>(buf) + old_size, 0, new_size - old_size);
+		return buf;
+	}
+};
+
+template <size_t N = 64>
+class HashTableAllocatorWithStackMemory : public HashTableAllocator {};
+HAEOF
+        fi
     fi
 fi
 printf '#pragma once\n#include <DB/Common/HashTable/Hash.h>\n' > contrib/stats-compat/stats/IntHash.h

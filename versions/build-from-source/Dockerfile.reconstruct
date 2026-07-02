@@ -96,7 +96,7 @@ RUN cmake .. -DCMAKE_BUILD_TYPE=Release -DTESTS=NO \
  && cp "$(find . -name libre2.a | head -1)" /usr/lib/ \
  && cp "$(find . -name libre2_st.a | head -1)" /usr/lib/ \
  && mkdir -p /src/build/libs/libcommon/src \
- && printf '#ifndef REVISION\n#define REVISION %s\n#endif\n' "${REVISION}" > /src/build/libs/libcommon/src/revision.h \
+ && printf '#ifndef REVISION\n#define REVISION %s\n#endif\n#ifndef SVN_REVISION\n#define SVN_REVISION %s\n#endif\n' "${REVISION}" "${REVISION}" > /src/build/libs/libcommon/src/revision.h \
  && make -j"$(nproc)" clickhouse-server && make -j"$(nproc)" clickhouse-client
 
 # Install binaries + a multi-call shim + a minimal IPv4 config (this era ships
@@ -128,14 +128,30 @@ RUN cat > /etc/clickhouse-server/config.xml <<'EOF'
     <users_config>users.xml</users_config>
     <default_profile>default</default_profile>
     <default_database>default</default_database>
+    <!-- profiles/users/quotas are ALSO embedded here (not only in users.xml) for the
+         very oldest snapshots (pre-2014-05): they have no users_config support and
+         read these directly from the main config. Newer eras load a separate users
+         config object from users.xml and ignore this copy, so there is no conflict.
+         See users.xml below for why max_block_size is the chosen minimal setting. -->
+    <profiles><default><max_block_size>65536</max_block_size></default></profiles>
+    <users><default>
+        <password></password>
+        <networks><ip>::/0</ip></networks>
+        <profile>default</profile>
+        <quota>default</quota>
+    </default></users>
+    <quotas><default></default></quotas>
 </yandex>
 EOF
 RUN cat > /etc/clickhouse-server/users.xml <<'EOF'
 <yandex>
-    <!-- Empty default profile: the oldest snapshots predate settings like
-         max_memory_usage and reject unknown settings in users.xml at boot. The
-         runner sets a per-query memory limit where the version supports it. -->
-    <profiles><default></default></profiles>
+    <!-- Minimal default profile: the oldest snapshots predate settings like
+         max_memory_usage and reject unknown settings in users.xml at boot, but the
+         very oldest (pre-2014-03) also reject an *empty* profile ("no profile
+         'default'"). max_block_size is a fundamental setting present in every era, so
+         it keeps the profile non-empty without tripping the unknown-setting check.
+         The runner sets a per-query memory limit where the version supports it. -->
+    <profiles><default><max_block_size>65536</max_block_size></default></profiles>
     <users><default>
         <password></password>
         <networks><ip>::/0</ip></networks>
