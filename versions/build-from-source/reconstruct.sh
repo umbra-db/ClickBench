@@ -1140,10 +1140,14 @@ IAQ=dbms/src/Interpreters/InterpreterAlterQuery.cpp
 #    specialization does) -- the HLL is then only ever built on UInt64, which both
 #    compiles and is correct (2015-09+ restructured the code the same way). --
 AFU=dbms/include/DB/AggregateFunctions/AggregateFunctionUniq.h
-# Pre-2014-06 used UniquesHashSet as a plain (non-template) type: `typedef
-# UniquesHashSet Set;`. The back-ported UniquesHashSet is a template with a default
-# Hash, so a bare use needs <>. Add it.
-[ -f "$AFU" ] && sed -i 's#typedef UniquesHashSet Set;#typedef UniquesHashSet<> Set;#' "$AFU"
+# Pre-2014-06 used UniquesHashSet as a plain (non-template) type, both as `typedef
+# UniquesHashSet Set;` and as a bare local like `UniquesHashSet tmp_set;`. The
+# back-ported UniquesHashSet is a template with a default Hash, so any bare use needs
+# <>. Rewrite "UniquesHashSet <identifier>;" -> "UniquesHashSet<> <identifier>;" (this
+# also covers the typedef); the <stats/UniquesHashSet.h> include and the longer
+# ...UniquesHashSetData identifiers are not followed by whitespace, so they are left
+# alone. No-op once UniquesHashSet is always used with explicit arguments.
+[ -f "$AFU" ] && sed -i -E 's#UniquesHashSet[[:space:]]+([A-Za-z_][A-Za-z0-9_]*)[[:space:]]*;#UniquesHashSet<> \1;#g' "$AFU"
 if [ -f "$AFU" ] && grep -q 'AggregateFunctionUniqHLL12Data<String>' "$AFU" \
    && ! grep -q 'AggregateFunctionUniqHLL12Data<Float32>' "$AFU"; then
     python3 - "$AFU" <<'PYEOF'
@@ -1268,6 +1272,26 @@ if anchor in s:
            '\ninline void assertChar(char symbol, ReadBuffer & buf)'
            '\n{\n\tconst char s[2] = { symbol, 0 };\n\tassertString(s, buf);\n}')
     open(p, 'w', encoding='utf-8', errors='surrogateescape').write(s[:i] + add + s[i:])
+PYEOF
+fi
+
+# -- WriteBufferFromFileDescriptor::sync (pre-2014): the back-ported (PATCH_FILL)
+#    CounterInFile.h calls buf.sync() to flush the counter file, but this era's
+#    WriteBufferFromFileDescriptor only has next() (sync() was added later). Add a
+#    sync() that flushes the buffer -- durability/fsync is irrelevant for the ephemeral
+#    benchmark, and CounterInFile itself is unused by it. Guarded on the class lacking
+#    sync(), so it's a no-op once sync() landed. --
+WB=dbms/include/DB/IO/WriteBufferFromFileDescriptor.h
+if [ -f "$WB" ] && ! grep -q 'void sync' "$WB"; then
+    python3 - "$WB" <<'PYEOF'
+import sys, re
+p = sys.argv[1]
+s = open(p, encoding='utf-8', errors='surrogateescape').read()
+m = re.search(r'class\s+WriteBufferFromFileDescriptor\b[^{]*\{', s)
+if m:
+    i = m.end()
+    s = s[:i] + '\npublic:\n\tvoid sync() { next(); }\n' + s[i:]
+    open(p, 'w', encoding='utf-8', errors='surrogateescape').write(s)
 PYEOF
 fi
 
