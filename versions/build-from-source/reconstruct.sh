@@ -1172,6 +1172,14 @@ grep -rlZ 'tr1' dbms libs 2>/dev/null | while IFS= read -r -d '' f; do
     sed -i 's#<tr1/\([a-z_]*\)>#<\1>#g; s#std::tr1::#std::#g' "$f"
 done
 
+# -- StoragePtr::operator bool (pre-2013-12): the old smart-pointer wrapper's
+#    `operator bool() const { return ptr; }` relied on boost::shared_ptr's implicit
+#    safe-bool conversion, but trusty's boost makes operator bool explicit, so the
+#    implicit conversion in the return fails. Make it explicit. Guarded on the file +
+#    exact return, so it's a no-op once StoragePtr was replaced by std::shared_ptr. --
+SP=dbms/include/DB/Storages/StoragePtr.h
+[ -f "$SP" ] && sed -i 's#^\(\s*\)return ptr;#\1return static_cast<bool>(ptr);#' "$SP"
+
 # -- HyperLogLog counter template arg order: pre-2015-09
 #    HyperLogLogWithSmallSetOptimization instantiates the counter as
 #    HyperLogLogCounter<K, Hash, DenominatorType> (old 3-arg form). The back-ported
