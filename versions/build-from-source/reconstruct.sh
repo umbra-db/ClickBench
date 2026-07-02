@@ -1237,6 +1237,13 @@ IAQ=dbms/src/Interpreters/InterpreterAlterQuery.cpp
 [ -f "$IAQ" ] && grep -q 'Poco::FileOutputStream' "$IAQ" && ! grep -q 'Poco/FileStream.h' "$IAQ" \
     && sed -i '1i #include <Poco/FileStream.h>' "$IAQ"
 
+# -- Poco::Timestamp: pre-2013 IProfilingBlockInputStream.cpp uses Poco::Timestamp::
+#    TimeDiff without including <Poco/Timestamp.h> (transitive then). Add it when the
+#    file references Poco::Timestamp but lacks the include. --
+IPBIS=dbms/src/DataStreams/IProfilingBlockInputStream.cpp
+[ -f "$IPBIS" ] && grep -q 'Poco::Timestamp' "$IPBIS" && ! grep -q 'Poco/Timestamp.h' "$IPBIS" \
+    && sed -i '1i #include <Poco/Timestamp.h>' "$IPBIS"
+
 # -- uniq on Float32/Float64 (pre-2015-09): AggregateFunctionUniq{HLL12,Combined}Data
 #    typedef their HyperLogLog / CombinedCardinalityEstimator Set over the raw column
 #    type T, so uniq(Float) instantiates the HLL on `float`. But OneAdder inserts the
