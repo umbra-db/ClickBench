@@ -1503,6 +1503,55 @@ done
 #    header defines StringRef solely inside namespace DB (guarded on the absence of a
 #    top-level `struct StringRef`), so it's a no-op on 2014-05+ where it's already global. --
 SR=dbms/include/DB/Core/StringRef.h
+# Pre-2012-06 predates StringRef entirely (the file does not exist), yet the overlaid
+# donor libcommon JSON.h includes <DB/Core/StringRef.h>. Create the known-good early
+# (2012-06) definition -- namespace DB, backed by CityHash from contrib -- when absent;
+# the hoist below then exposes it globally. A no-op once the file exists.
+if [ ! -f "$SR" ]; then
+    mkdir -p "$(dirname "$SR")"
+    cat > "$SR" <<'EOF'
+#pragma once
+
+#include <string.h>
+#include <city.h>
+
+#include <string>
+
+
+namespace DB
+{
+	/// Reconstruct shim: StringRef did not exist before 2012-06 (this is that copy).
+	struct StringRef
+	{
+		const char * data;
+		size_t size;
+
+		StringRef(const char * data_, size_t size_) : data(data_), size(size_) {}
+		StringRef(const unsigned char * data_, size_t size_) : data(reinterpret_cast<const char *>(data_)), size(size_) {}
+		StringRef(const std::string & s) : data(s.data()), size(s.size()) {}
+		StringRef() : data(NULL), size(0) {}
+	};
+
+	inline bool operator==(StringRef lhs, StringRef rhs)
+	{
+		return lhs.size == rhs.size && 0 == memcmp(lhs.data, rhs.data, lhs.size);
+	}
+
+	inline bool operator!=(StringRef lhs, StringRef rhs)
+	{
+		return !(lhs == rhs);
+	}
+
+	struct StringRefHash
+	{
+		inline size_t operator() (StringRef x) const
+		{
+			return CityHash64(x.data, x.size);
+		}
+	};
+}
+EOF
+fi
 if [ -f "$SR" ] && grep -q 'namespace DB' "$SR" && ! grep -qE '^struct StringRef' "$SR" \
    && ! grep -q 'using DB::StringRef' "$SR"; then
     printf '\n// Added by reconstruct.sh: expose DB::StringRef globally for the donor libcommon JSON.h\nusing DB::StringRef;\n' >> "$SR"
