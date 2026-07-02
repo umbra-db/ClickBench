@@ -592,6 +592,13 @@ if [ -d libs/libcommon/include/common ]; then
     # from the generated revision.h); just declare it so the include resolves.
     [ -e libs/libcommon/include/common/Revision.h ] || \
         printf '#pragma once\nnamespace Revision { unsigned get(); }\n' > libs/libcommon/include/common/Revision.h
+    # Yandex/optimization.h: the external header of branch-prediction macros (likely/
+    # unlikely) that pre-2013 code (e.g. libpocoext/ThreadNumber.cpp) includes. The donor
+    # moved these to common/likely.h, so provide optimization.h under the common/ prefix
+    # (== the Yandex/ symlink). Guarded so it's a no-op where the header already exists.
+    [ -e libs/libcommon/include/common/optimization.h ] || \
+        printf '#pragma once\n#if !defined(likely)\n#define likely(x)   __builtin_expect(!!(x), 1)\n#endif\n#if !defined(unlikely)\n#define unlikely(x) __builtin_expect(!!(x), 0)\n#endif\n' \
+            > libs/libcommon/include/common/optimization.h
     # Yandex/time2str.h: external time helpers the donor folded into DateLUT. The only
     # ones used by compiled (non-Server, non-test) code are the MergeTree part-naming
     # helpers Date2OrderedIdentifier / OrderedIdentifier2Date; implement them via
