@@ -1047,6 +1047,31 @@ for base in ReservoirSampler ReservoirSamplerDeterministic UniquesHashSet; do
     fi
 done
 
+# -- VarInt narrow read overloads: pre-2012-07 VarInt.h declared readVarUInt only for
+#    UInt64, but the back-ported UniquesHashSet reads its UInt32 size fields directly
+#    (readVarUInt(UInt32&, ...)). Add the narrow *read* overloads (forwarding through a
+#    UInt64) inside namespace DB when absent. Only the read side is needed: a UInt32 *write*
+#    argument already widens uniquely to writeVarUInt(UInt64), whereas adding narrow write
+#    overloads would make int/enum callers (Connection.cpp) ambiguous. A no-op on the donor
+#    and every later era, which already declare the UInt32/UInt16 read overloads. --
+python3 - <<'PYEOF'
+p = 'dbms/include/DB/IO/VarInt.h'
+import os
+if os.path.exists(p):
+    with open(p, encoding='utf-8', errors='surrogateescape') as f:
+        s = f.read()
+    if 'readVarUInt(UInt32' not in s:
+        anchor = 'void readVarUInt(UInt64 & x, ReadBuffer & istr);'
+        add = (anchor + '\n'
+               '/// Narrow read overloads (reconstruct shim): forward through UInt64.\n'
+               'inline void readVarUInt(UInt32 & x, ReadBuffer & istr) { UInt64 t = 0; readVarUInt(t, istr); x = static_cast<UInt32>(t); }\n'
+               'inline void readVarUInt(UInt16 & x, ReadBuffer & istr) { UInt64 t = 0; readVarUInt(t, istr); x = static_cast<UInt16>(t); }\n')
+        if anchor in s:
+            s = s.replace(anchor, add, 1)
+            with open(p, 'w', encoding='utf-8', errors='surrogateescape') as f:
+                f.write(s)
+PYEOF
+
 # -- generate the re2_st (single-threaded re2) headers into a stable include dir --
 mkdir -p contrib/re2_st_gen
 ( cd contrib/re2_st_gen && sh /src/contrib/libre2/create_st_headers.sh /src/contrib/libre2 . )
