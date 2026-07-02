@@ -435,6 +435,13 @@ done
 if [ -f libs/libdaemon/include/daemon/BaseDaemon.h ]; then
     printf '#pragma once\n#include <daemon/BaseDaemon.h>\ntypedef BaseDaemon Daemon;\n' \
         > contrib/statdaemons-compat/statdaemons/daemon.h
+    # Pre-2013-05 the daemon lived at <Yandex/daemon.h> (implemented by the era's own
+    # libcommon/src/daemon.cpp against the never-public external Yandex/daemon.h). Map
+    # that include to BaseDaemon too, and drop the obsolete daemon.cpp -- BaseDaemon
+    # (libdaemon) is the daemon now, so the old implementation would only conflict.
+    printf '#pragma once\n#include <daemon/BaseDaemon.h>\ntypedef BaseDaemon Daemon;\n' \
+        > libs/libcommon/include/common/daemon.h
+    rm -f libs/libcommon/src/daemon.cpp
     # The donor's BaseDaemon is newer and drags in evolved deps (zkutil/graphite)
     # the older tree lacks. Replace it with a thin no-op base carrying just the
     # API the early Server/TCPHandler use (Poco::Util::ServerApplication plus
@@ -1158,6 +1165,56 @@ if [ -f "$SRV_CML" ]; then
     [ -f tools/logrotate/CMakeLists.logrotate ] || sed -i '/INCLUDE[[:space:]]*(.*tools\/logrotate\/CMakeLists\.logrotate)/d' "$SRV_CML"
 fi
 
+# -- Poco/Ext/scopedTry.h (pre-2013-05): StorageMergeTree uses Poco::ScopedTry<FastMutex>
+#    (a scoped try-lock) from this never-public libpocoext header. It was dropped later,
+#    so provide it when absent: default-constructed, lock(&mutex) tries and returns
+#    whether it acquired, destructor releases if held -- exactly the surface the caller
+#    (clearOldParts) uses. --
+SCT=libs/libpocoext/include/Poco/Ext/scopedTry.h
+if [ -d libs/libpocoext/include/Poco/Ext ] && [ ! -e "$SCT" ]; then
+    cat > "$SCT" <<'EOF'
+#pragma once
+namespace Poco
+{
+    template <typename M>
+    class ScopedTry
+    {
+    public:
+        ScopedTry() : m(0) {}
+        ~ScopedTry() { if (m) m->unlock(); }
+        bool lock(M * mutex) { if (mutex && mutex->tryLock()) { m = mutex; return true; } return false; }
+    private:
+        M * m;
+    };
+}
+EOF
+fi
+
+# -- mysqlxx/PoolWithFailover.h (pre-2013-05): the back-ported Embedded dictionaries
+#    (TechDataHierarchy/RegionsHierarchy) include it, but this era's mysqlxx only has
+#    Pool.h (the failover pool came in 2013-05). Provide a thin wrapper over mysqlxx::Pool
+#    exposing the surface those dicts use (ctor from a config key, Entry, Get()). MySQL
+#    dictionaries are never loaded by the benchmark, so it only needs to compile/link. --
+MPF=libs/libmysqlxx/include/mysqlxx/PoolWithFailover.h
+if [ -e libs/libmysqlxx/include/mysqlxx/Pool.h ] && [ ! -e "$MPF" ]; then
+    cat > "$MPF" <<'EOF'
+#pragma once
+#include "Pool.h"
+namespace mysqlxx
+{
+    class PoolWithFailover
+    {
+    public:
+        typedef Pool::Entry Entry;
+        PoolWithFailover(const std::string & config_name, unsigned = 1, unsigned = 3) : pool(config_name) {}
+        Entry Get() { return pool.Get(); }
+    private:
+        Pool pool;
+    };
+}
+EOF
+fi
+
 # -- Poco::FileOutputStream: pre-2014-07 InterpreterAlterQuery uses it without
 #    including <Poco/FileStream.h> (it came in transitively then, not with the donor
 #    Poco). Add the include when the file references it but lacks the include. --
@@ -1275,6 +1332,10 @@ for base in ('dbms', 'libs'):
             # the Yandex:: qualifier; the methods those callers use (getValues,
             # toHourInaccurate, ...) all still exist on the donor DateLUTImpl.
             ns = ns.replace('Yandex::', '')
+            # Pre-2013-05 named the bounds-checked day-number conversions safeFromDayNum
+            # / safeToDayNum; the donor dropped the "safe" prefix (fromDayNum/toDayNum are
+            # bounds-checked via fixDay).
+            ns = ns.replace('safeFromDayNum', 'fromDayNum').replace('safeToDayNum', 'toDayNum')
             if 'DateLUTSingleton' in ns:
                 ns = ns.replace('DateLUTSingleton::instance', 'DateLUT::instance').replace('DateLUTSingleton', 'DateLUT')
             ns = ref.sub(r'const auto & \1 = DateLUT::instance(\2)', ns)
