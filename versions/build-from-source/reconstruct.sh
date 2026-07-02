@@ -261,23 +261,26 @@ private:
 
 }
 EOF
-    # Some back-ported (newer) headers, e.g. NetException.h, include
-    # <DB/Common/Exception.h>; in this era Exception lives at DB/Core. Forward the
-    # DB/Common path to it (only when the tree has no real DB/Common/Exception.h).
-    if [ ! -e dbms/include/DB/Common/Exception.h ]; then
-        mkdir -p dbms/include/DB/Common
-        {
-            printf '#pragma once\n#include <DB/Core/Exception.h>\n'
-            # tryLogCurrentException(Poco::Logger *) overload was added after 2015-03;
-            # the back-ported ErrorHandlers.h calls it. Provide it (forwarding to the
-            # era's name-based overload) only when the tree lacks it, so it doesn't
-            # clash on 2015-04+ which already declare it.
-            if ! grep -q 'tryLogCurrentException(Poco::Logger' dbms/include/DB/Core/Exception.h 2>/dev/null; then
-                printf '#include <Poco/Logger.h>\n'
-                printf 'namespace DB { inline void tryLogCurrentException(Poco::Logger * logger, const std::string & = "") { tryLogCurrentException(logger ? logger->name().c_str() : ""); } }\n'
-            fi
-        } > dbms/include/DB/Common/Exception.h
-    fi
+fi
+# Some back-ported (newer) headers -- NetException.h, and the PATCH_FILL
+# CounterInFile.h -- include <DB/Common/Exception.h>; before the class was inlined
+# there (2015-12) Exception lived at DB/Core. Forward the DB/Common path to it (only
+# when the tree has no real DB/Common/Exception.h). This is independent of where the
+# Exception *class* is defined -- pre-2015-11 trees keep it in DB/Core whether or not
+# they vendor it -- so it lives outside the vendor-Exception guard above.
+if [ ! -e dbms/include/DB/Common/Exception.h ] && [ -e dbms/include/DB/Core/Exception.h ]; then
+    mkdir -p dbms/include/DB/Common
+    {
+        printf '#pragma once\n#include <DB/Core/Exception.h>\n'
+        # tryLogCurrentException(Poco::Logger *) overload was added after 2015-03;
+        # the back-ported ErrorHandlers.h calls it. Provide it (forwarding to the
+        # era's name-based overload) only when the tree lacks it, so it doesn't
+        # clash on 2015-04+ which already declare it.
+        if ! grep -q 'tryLogCurrentException(Poco::Logger' dbms/include/DB/Core/Exception.h 2>/dev/null; then
+            printf '#include <Poco/Logger.h>\n'
+            printf 'namespace DB { inline void tryLogCurrentException(Poco::Logger * logger, const std::string & = "") { tryLogCurrentException(logger ? logger->name().c_str() : ""); } }\n'
+        fi
+    } > dbms/include/DB/Common/Exception.h
 fi
 # The back-ported SummingSortedBlockInputStream.h includes <DB/Core/FieldVisitors.h>;
 # before that split the Field visitors (FieldVisitorSum etc.) lived in DB/Core/Field.h.
@@ -719,26 +722,32 @@ struct Watch
     virtual void process(WatchEvent::type, SessionState::type, const std::string &) = 0;
 };
 
+namespace OpCode { enum type { Create, Remove, SetData, Check }; }
 struct Op
 {
     virtual ~Op() {}
+    virtual OpCode::type getType() const { return OpCode::Check; }
     struct Create; struct Remove; struct SetData; struct Check;
 };
 struct Op::Create : Op
 {
     Create(const std::string &, const std::string &, const std::vector<data::ACL> &, CreateMode::type) {}
+    OpCode::type getType() const { return OpCode::Create; }
 };
 struct Op::Remove : Op
 {
     Remove(const std::string &, int32_t) {}
+    OpCode::type getType() const { return OpCode::Remove; }
 };
 struct Op::SetData : Op
 {
     SetData(const std::string &, const std::string &, int32_t) {}
+    OpCode::type getType() const { return OpCode::SetData; }
 };
 struct Op::Check : Op
 {
     Check(const std::string &, int32_t) {}
+    OpCode::type getType() const { return OpCode::Check; }
 };
 
 struct OpResult
@@ -824,6 +833,61 @@ if os.path.exists(p):
         s = s[:pos] + "\n// Added by reconstruct.sh: int hashes from the external <stats/IntHash.h>.\n" + add + "\n" + s[pos:]
         open(p, "w", encoding="utf-8", errors="surrogateescape").write(s)
 PYEOF
+# The oldest trees (pre-2014-12) have no DB/Common/HashTable/Hash.h at all -- their
+# HashMap.h pulled intHash32 straight from the external <stats/IntHash.h>, and nothing
+# in-tree defines it. Two consumers need it: that external path, and the back-ported
+# (PATCH_FILL) UniquesHashSet.h, which includes <DB/Common/HashTable/Hash.h> +
+# <DB/Common/HashTable/HashTableAllocator.h>. So when the subdir Hash.h is absent,
+# CREATE it (the int-hash helpers the external stats library provided) and forward the
+# subdir HashTableAllocator.h path to this era's flat DB/Common/HashTableAllocator.h
+# (the subdir split came later; the flat header already has HashTableAllocator +
+# HashTableAllocatorWithStackMemory). stats/IntHash.h then forwards to this one file, so
+# there is a single intHash32 definition per TU regardless of era.
+if [ ! -f dbms/include/DB/Common/HashTable/Hash.h ]; then
+    mkdir -p dbms/include/DB/Common/HashTable
+    cat > dbms/include/DB/Common/HashTable/Hash.h <<'IHEOF'
+#pragma once
+// Added by reconstruct.sh: the int-hash helpers pre-2014-12 pulled from the external
+// stats library (this era has no in-tree HashTable/Hash.h). intHash32/IntHash32 are
+// used by HashMap.h (via <stats/IntHash.h>) and intHash32/intHashCRC32 by the
+// back-ported UniquesHashSet.h.
+#include <DB/Core/Types.h>
+
+template <DB::UInt64 salt>
+inline DB::UInt32 intHash32(DB::UInt64 key)
+{
+	key ^= salt;
+	key = (~key) + (key << 18);
+	key = key ^ ((key >> 31) | (key << 33));
+	key = key * 21;
+	key = key ^ ((key >> 11) | (key << 53));
+	key = key + (key << 6);
+	key = key ^ ((key >> 22) | (key << 42));
+	return key;
+}
+
+template <typename T, DB::UInt64 salt = 0>
+struct IntHash32 { size_t operator() (const T & key) const { return intHash32<salt>(key); } };
+
+inline DB::UInt64 intHashCRC32(DB::UInt64 x)
+{
+	DB::UInt64 crc = -1ULL;
+	asm("crc32q %[x], %[crc]\n" : [crc] "+r" (crc) : [x] "rm" (x));
+	return crc;
+}
+IHEOF
+    if [ ! -e dbms/include/DB/Common/HashTable/HashTableAllocator.h ] \
+       && [ -e dbms/include/DB/Common/HashTableAllocator.h ]; then
+        {
+            printf '#pragma once\n#include <DB/Common/HashTableAllocator.h>\n'
+            # This era keeps the allocators in namespace DB, but the back-ported
+            # UniquesHashSet.h (which is at global scope) refers to
+            # HashTableAllocatorWithStackMemory unqualified -- later eras exposed it as a
+            # global alias. Hoist both allocator templates to global scope.
+            printf 'using DB::HashTableAllocator;\nusing DB::HashTableAllocatorWithStackMemory;\n'
+        } > dbms/include/DB/Common/HashTable/HashTableAllocator.h
+    fi
+fi
 printf '#pragma once\n#include <DB/Common/HashTable/Hash.h>\n' > contrib/stats-compat/stats/IntHash.h
 
 # The overlaid 2015-12 ReservoirSampler{,Deterministic}.h back a small sample buffer
@@ -1122,14 +1186,28 @@ grep -rlZ 'RegionsNames::SupportedLanguages' dbms 2>/dev/null | while IFS= read 
     sed -i 's#RegionsNames::SupportedLanguages::Enum#RegionsNames::Language#g; s#RegionsNames::SupportedLanguages::#RegionsNames::Language::#g' "$f"
 done
 
+# -- StringRef: the donor's libcommon common/JSON.h uses an unqualified, global
+#    `StringRef` (its getRawString()/getRawName() return it). By 2014-05 StringRef
+#    lived at global scope in DB/Core/StringRef.h, but the 2014-04-and-older copy
+#    defines it inside `namespace DB`, so the global name the donor JSON.h expects
+#    is invisible. Hoist it with a global `using DB::StringRef;` — but only when the
+#    header defines StringRef solely inside namespace DB (guarded on the absence of a
+#    top-level `struct StringRef`), so it's a no-op on 2014-05+ where it's already global. --
+SR=dbms/include/DB/Core/StringRef.h
+if [ -f "$SR" ] && grep -q 'namespace DB' "$SR" && ! grep -qE '^struct StringRef' "$SR" \
+   && ! grep -q 'using DB::StringRef' "$SR"; then
+    printf '\n// Added by reconstruct.sh: expose DB::StringRef globally for the donor libcommon JSON.h\nusing DB::StringRef;\n' >> "$SR"
+fi
+
 # -- root CMakeLists: add the quicklz/re2_st include dirs and, on the C++ flags,
 #    -fpermissive plus the force-included cmath shim (anchored on the donor's
 #    stable libcityhash include line / -std=gnu++1y flag) --
 sed -i 's#include_directories (${METRICA_SOURCE_DIR}/contrib/libcityhash/)#include_directories (${METRICA_SOURCE_DIR}/contrib/quicklz-stub/)\ninclude_directories (${METRICA_SOURCE_DIR}/contrib/re2_st_gen/)\ninclude_directories (${METRICA_SOURCE_DIR}/contrib/statdaemons-compat/)\ninclude_directories (${METRICA_SOURCE_DIR}/contrib/yandex-compat/)\ninclude_directories (${METRICA_SOURCE_DIR}/contrib/dc-compat/)\ninclude_directories (${METRICA_SOURCE_DIR}/contrib/stats-compat/)\ninclude_directories (${METRICA_SOURCE_DIR}/contrib/strconvert-compat/)\ninclude_directories (${METRICA_SOURCE_DIR}/contrib/jsonxx-compat/)\ninclude_directories (${METRICA_SOURCE_DIR}/contrib/zkcpp-stub/)\ninclude_directories (${METRICA_SOURCE_DIR}/contrib/libcityhash/)#' CMakeLists.txt
 # Force-include a few standard headers: on this (trusty) toolchain they aren't
 # pulled in transitively the way the newer 16.04/boost-1.58 headers were, so code
-# that assumes std::accumulate (<numeric>) / std::mt19937 (<random>) is in scope
-# fails to compile without them.
-sed -i 's#-std=gnu++1y#-std=gnu++1y -fpermissive -D_GLIBCXX_USE_CXX11_ABI=0 -include numeric -include random#' CMakeLists.txt
+# that assumes std::accumulate (<numeric>) / std::mt19937 (<random>) /
+# std::unordered_set (pre-2014-05 ITableDeclaration relied on a transitive include)
+# is in scope fails to compile without them.
+sed -i 's#-std=gnu++1y#-std=gnu++1y -fpermissive -D_GLIBCXX_USE_CXX11_ABI=0 -include numeric -include random -include unordered_set#' CMakeLists.txt
 
 echo "reconstruct.sh: build system reconciled"

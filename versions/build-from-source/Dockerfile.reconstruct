@@ -117,8 +117,14 @@ RUN cat > /etc/clickhouse-server/config.xml <<'EOF'
     <http_port>8123</http_port>
     <path>/opt/clickhouse/</path>
     <tmp_path>/opt/clickhouse/tmp/</tmp_path>
-    <mark_cache_size>5368709120</mark_cache_size>
-    <uncompressed_cache_size>8589934592</uncompressed_cache_size>
+    <!-- 1 GiB each: the oldest snapshots (pre-2014-05) parse these cache sizes as a
+         signed 32-bit int and reject anything over 2^31 ("Not a valid integer") at
+         boot, so keep both under that ceiling. Still ample for hot-run caching of
+         these datasets, and the same value is used across the whole reconstructed
+         sweep (each version is rebuilt from source with this config), so cache size
+         stays consistent between versions. -->
+    <mark_cache_size>1073741824</mark_cache_size>
+    <uncompressed_cache_size>1073741824</uncompressed_cache_size>
     <users_config>users.xml</users_config>
     <default_profile>default</default_profile>
     <default_database>default</default_database>
