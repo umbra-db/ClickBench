@@ -770,6 +770,13 @@ if m:
 PYEOF
 fi
 
+# -- ALWAYS_INLINE macro: used by the back-ported CompactArray (which includes
+#    DB/Core/Defines.h); added to Defines.h after 2014-10. Append it when absent. --
+DEF=dbms/include/DB/Core/Defines.h
+if [ -f "$DEF" ] && ! grep -q 'ALWAYS_INLINE' "$DEF"; then
+    printf '\n#ifndef ALWAYS_INLINE\n#define ALWAYS_INLINE __attribute__((__always_inline__))\n#endif\n' >> "$DEF"
+fi
+
 # -- uniq on Float32/Float64 (pre-2015-09): AggregateFunctionUniq{HLL12,Combined}Data
 #    typedef their HyperLogLog / CombinedCardinalityEstimator Set over the raw column
 #    type T, so uniq(Float) instantiates the HLL on `float`. But OneAdder inserts the
