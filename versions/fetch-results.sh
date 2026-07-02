@@ -65,6 +65,16 @@ for v in "${VERSIONS[@]}"; do
           AND JSONExtractString(content, 'version') = '${v}'
           AND length(JSONExtractArrayRaw(content, 'result')) = 344
         FORMAT TSVRaw" > /tmp/vb-content.json
+    # Skip runs whose data load did not complete: an OOM during the (parallel) load can
+    # kill the server mid-INSERT and take the container down, leaving data_size null
+    # and/or the big datasets unloaded (this is what repeatedly corrupted 18.10.3,
+    # 1.1.54310/54327, 53989/53990 -- all from runs before the loader was fixed to bound
+    # concurrency + retry). hits loads on every version, so a missing hits load time is a
+    # reliable "incomplete run" signal. Such versions are simply left out until re-run.
+    if jq -e '(.data_size == null) or (.load_time.hits == null)' /tmp/vb-content.json >/dev/null 2>&1; then
+        echo "  SKIP ${v}: incomplete load (data_size/hits missing) -- re-run needed" >&2
+        continue
+    fi
     rd="$(reldate "${v}")"
     # Keep the recorded fields; add release_date (preferring one already in the payload).
     # Compact one line per file: these are generated artifacts, kept small in git.
