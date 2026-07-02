@@ -112,13 +112,15 @@ ensure_built_image() {
         bash "${bfs}/build.sh" "${VERSION}" "${tag:-v${VERSION}-stable}" "${gcc:-5}" >&2
         return $?
     fi
-    sha="$(awk -F'\t' -v v="${VERSION}" '$1==v{print $2; exit}' "${bfs}/monthly.tsv" 2>/dev/null)"
+    local rev
+    read -r sha rev < <(awk -F'\t' -v v="${VERSION}" '$1==v{print $2, $4; exit}' "${bfs}/monthly.tsv" 2>/dev/null)
     if [ -n "${sha}" ]; then
-        # The revision is derived from the snapshot's own source (max
-        # DBMS_MIN_REVISION_WITH_* in Core/Defines.h) inside Dockerfile.reconstruct, so
-        # each build reports its authentic era revision as 0.0.<rev>; nothing to pass here.
-        echo "reconstructing ${IMAGE} from source (commit ${sha})" >&2
-        sudo docker buildx build --progress=plain --load --build-arg "TAG=${sha}" \
+        # monthly.tsv column 4 is the per-month revision, interpolated between the dates
+        # the DBMS_MIN_REVISION_WITH_* protocol defines appeared; the Dockerfile clamps
+        # it up to the snapshot's own protocol floor. The server then reports 0.0.<rev>.
+        echo "reconstructing ${IMAGE} from source (commit ${sha}, revision ${rev:-auto})" >&2
+        sudo docker buildx build --progress=plain --load \
+            --build-arg "TAG=${sha}" ${rev:+--build-arg "REVISION=${rev}"} \
             -t "${IMAGE}" -f "${bfs}/Dockerfile.reconstruct" "${bfs}" >&2
         return $?
     fi
