@@ -538,7 +538,10 @@ function toggleAll(e, selectors_map) {
 unique_versions.map(elem => {
     let selector = document.createElement('a');
     selector.className = 'selector selector-active';
-    selector.appendChild(document.createTextNode(elem));
+    /// Show the short calendar version (major.minor, no patch) as on the chart/table;
+    /// keep the full version on the element for the selection lookup below.
+    selector.dataset.version = elem;
+    selector.appendChild(document.createTextNode(displayVersion(elem)));
     versions_elem.appendChild(selector);
     if (!(elem in selectors.version)) { selectors.version[elem] = true; }
     selector.addEventListener('click', e => toggle(e, elem, selectors.version));
@@ -576,7 +579,7 @@ if (!selectors.queries.length) { selectors.queries = query_meta.map(() => true);
 
 function updateSelectors() {
     [...versions_elem.querySelectorAll('a')].filter(e => e.id != 'select-all-versions').map(elem => {
-        elem.className = selectors.version[elem.innerText] ? 'selector selector-active' : 'selector' });
+        elem.className = selectors.version[elem.dataset.version] ? 'selector selector-active' : 'selector' });
     [...datasets_elem.querySelectorAll('a')].filter(e => e.id != 'select-all-datasets').map(elem => {
         elem.className = selectors.dataset[elem.innerText] ? 'selector selector-active' : 'selector' });
     [...document.getElementById('selectors_run').querySelectorAll('a')].map(elem => {
