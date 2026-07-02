@@ -155,6 +155,22 @@
             padding-right: 1rem;
         }
 
+        .remove-system {
+            visibility: hidden;
+            cursor: pointer;
+            color: var(--link-color);
+            user-select: none;
+            padding-right: 0.4rem;
+        }
+
+        .summary-row:hover .remove-system {
+            visibility: visible;
+        }
+
+        .remove-system:hover {
+            color: var(--link-hover-color);
+        }
+
         .summary-bar-cell {
             width: 100%;
             position: relative;
@@ -576,6 +592,20 @@ function renderSummary(filtered_data, baseline_data) {
 
         let td_name = document.createElement('td');
         td_name.className = 'summary-name';
+
+        /// A ✕ to drop this version from the selection (shown on row hover), as on the
+        /// main ClickBench page.
+        let remove = document.createElement('span');
+        remove.className = 'remove-system';
+        remove.textContent = '✕';
+        remove.title = 'Remove this version from the selection';
+        remove.addEventListener('click', e => {
+            e.preventDefault(); e.stopPropagation();
+            selectors.version[elem.version] = false;
+            render(); updateSelectors(); updateHistory();
+        });
+        td_name.appendChild(remove);
+
         let link = document.createElement('a');
         link.appendChild(document.createTextNode(displayVersion(elem.version)));
         link.href = "https://github.com/ClickHouse/ClickBench/blob/main/versions/" + elem.source;
@@ -809,9 +839,83 @@ function render() {
     });
 }
 
+/// Compact URL state, ported from the main ClickBench page: each selector set is
+/// encoded as the shortest unique subsequence of its keys, and only the smaller of the
+/// selected/unselected side is listed, so the fragment stays short even with 300+
+/// queries and 160+ versions.
+function isSubsequence(str, subseq) {
+    let i = 0, j = 0;
+    while (i < str.length && j < subseq.length) {
+        if (str[i] === subseq[j]) j++;
+        i++;
+    }
+    return j === subseq.length;
+}
+
+function findUniqueSubsequence(target, others) {
+    const num_matches = others.filter(s => isSubsequence(s, target)).length;
+    let num_failures = 0;
+    for (let i = 0; i < 1000; ++i) {
+        const cut_idx = (i + 123) * 67601 % target.length;
+        const cut = target.substring(0, cut_idx) + target.substring(cut_idx + 1, target.length);
+        if (others.filter(s => isSubsequence(s, cut)).length == num_matches) {
+            target = cut;
+            num_failures = 0;
+        } else {
+            ++num_failures;
+            if (num_failures == target.length) { break; }
+        }
+    }
+    return target;
+}
+
+function encodedStrings(strings) {
+    let res = {};
+    strings.forEach(s => { res[s] = findUniqueSubsequence(s, strings) });
+    return res;
+}
+
+let encoded_keys = {};
+
+function encodeState(selectors) {
+    return Object.keys(selectors).map(k => {
+        let encoded_str = k + '=';
+        if (typeof selectors[k] === 'string') { return encoded_str + selectors[k]; }
+        if (!encoded_keys[k]) { encoded_keys[k] = encodedStrings(Object.keys(selectors[k])); }
+        const count_total = Object.values(selectors[k]).length;
+        const count_selected = Object.values(selectors[k]).filter(x => x).length;
+        if (count_selected * 2 <= count_total) {
+            encoded_str += '+' + Object.keys(selectors[k]).filter(x => selectors[k][x]).map(x => encoded_keys[k][x]).join('|');
+        } else {
+            encoded_str += '-' + Object.keys(selectors[k]).filter(x => !selectors[k][x]).map(x => encoded_keys[k][x]).join('|');
+        }
+        return encoded_str;
+    }).join('&');
+}
+
+function decodeState(state) {
+    let decoded = {};
+    state.split('&').forEach(kv => {
+        let [k, v] = kv.split('=');
+        if (typeof selectors[k] === 'string') {
+            decoded[k] = v;
+        } else if (typeof selectors[k] === 'object') {
+            decoded[k] = Array.isArray(selectors[k]) ? [] : {};
+            const filtered = v.substring(1, v.length).split('|').filter(s => s !== '')
+                .map(substr => Object.keys(selectors[k]).filter(x => isSubsequence(x, decodeURIComponent(substr))).reduce((a, b) => a.length <= b.length ? a : b));
+            if (v.startsWith('+')) {
+                Object.keys(selectors[k]).forEach(x => { decoded[k][x] = filtered.includes(x); });
+            } else if (v.startsWith('-')) {
+                Object.keys(selectors[k]).forEach(x => { decoded[k][x] = !filtered.includes(x); });
+            }
+        }
+    });
+    return decoded;
+}
+
 function updateHistory() {
     history.pushState(selectors, '',
-        window.location.pathname + (window.location.search || '') + '#' + btoa(JSON.stringify(selectors)));
+        window.location.pathname + (window.location.search || '') + '#' + encodeState(selectors));
 }
 
 window.onpopstate = function(event) {
@@ -823,8 +927,7 @@ window.onpopstate = function(event) {
 
 if (window.location.hash) {
     try {
-        let restored = JSON.parse(atob(window.location.hash.substring(1)));
-        /// Only trust it if the shape matches the current data.
+        const restored = decodeState(decodeURIComponent(window.location.hash.substring(1)));
         if (restored && restored.queries && restored.queries.length == num_queries) { selectors = restored; }
     } catch {}
 }
