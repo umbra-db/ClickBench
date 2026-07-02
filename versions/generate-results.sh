@@ -48,7 +48,10 @@ OUT=data.generated.js
         jq --compact-output ". += {\"source\": \"${file}\"}" "${file}"
     done < <(
         for f in results/*.json; do
-            printf '%s\t%s\n' "$(jq -r '.release_date // "9999-99-99"' "${f}")" "${f}"
+            # A missing OR empty release_date must still yield a non-empty sort key: an empty
+            # first field makes the line start with a tab, which `read -r _rd file` then strips
+            # as leading IFS whitespace, shifting the filename into _rd and dropping the entry.
+            printf '%s\t%s\n' "$(jq -r 'if (.release_date // "") == "" then "9999-99-99" else .release_date end' "${f}")" "${f}"
         done | sort -t$'\t' -k1,1 -k2,2V
     )
     echo ''

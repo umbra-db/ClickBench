@@ -78,8 +78,13 @@ for v in "${VERSIONS[@]}"; do
     rd="$(reldate "${v}")"
     # Keep the recorded fields; add release_date (preferring one already in the payload).
     # Compact one line per file: these are generated artifacts, kept small in git.
+    # Prefer a non-empty release_date already in the payload; otherwise use the looked-up
+    # one (reldate). Note jq's // only defaults on null, not on an empty string, so an empty
+    # payload release_date (what run-version.sh writes when it couldn't resolve a date) must
+    # be handled explicitly -- else it would shadow the value we just resolved here.
     jq -cS --arg rd "${rd}" \
-        '. + {release_date: (.release_date // (if $rd == "" then null else $rd end))}' \
+        '. + {release_date: (if (.release_date // "") != "" then .release_date
+                             elif $rd != "" then $rd else null end)}' \
         /tmp/vb-content.json > "results/${v}.json"
     echo "  results/${v}.json (released ${rd:-unknown})" >&2
 done
