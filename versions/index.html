@@ -658,18 +658,25 @@ function renderSummary(filtered_data, baseline_data) {
         value_text = idx => totals[idx] == null ? '—' : `${fmt(totals[idx])} (×${summaries[idx].toFixed(2)})`;
     } else {
         /// Query time: ratio = (10ms + duration) / (10ms + baseline); an absent result
-        /// counts as 2× this version's own worst time. Geometric mean across enabled
+        /// counts as 2× the worst time for THAT query across the shown versions (not this
+        /// version's own worst). Because the penalty is per-query, a query that a version
+        /// did not run gets the same fill-in for every version, so it contributes equally
+        /// and cannot flip the order of two other versions. Geometric mean across enabled
         /// queries (dataset on + query checkbox on).
         metric_noun = 'query time';
+        /// Per-query worst (slowest) selected-run time across the shown versions.
+        const worst_per_query = [...Array(num_queries).keys()].map(i => {
+            const vals = filtered_data.map(elem => selectRun(elem.result[i])).filter(x => x !== null);
+            return vals.length ? Math.max(...vals) : null;
+        });
         summaries = filtered_data.map(elem => {
-            const all_timings = elem.result.map(selectRun).filter(x => x !== null);
-            const fallback_timing = all_timings.length ? missing_result_penalty * Math.max(...all_timings) : missing_result_time;
             let accumulator = 0, used = 0;
             for (let i = 0; i < num_queries; ++i) {
                 if (!any_enabled || queryEnabled(i)) {
-                    const curr = selectRun(elem.result[i]) ?? fallback_timing;
                     const base = selectRun(baseline_data[i]);
                     if (base === null) { continue; }
+                    const penalty = worst_per_query[i] != null ? missing_result_penalty * worst_per_query[i] : missing_result_time;
+                    const curr = selectRun(elem.result[i]) ?? penalty;
                     accumulator += Math.log((constant_time_add + curr) / (constant_time_add + base));
                     ++used;
                 }
