@@ -1363,6 +1363,12 @@ for base in ('dbms', 'libs'):
             # / safeToDayNum; the donor dropped the "safe" prefix (fromDayNum/toDayNum are
             # bounds-checked via fixDay).
             ns = ns.replace('safeFromDayNum', 'fromDayNum').replace('safeToDayNum', 'toDayNum')
+            # Pre-2012-09 ToMondayImpl rounds down to Monday via date_lut.toWeek(...); the
+            # donor renamed that "start of the week" method to toFirstDayOfWeek (its toWeek,
+            # when it later reappeared, means the ISO week *number*). Newer eras don't call
+            # `.toWeek(` at all, so this is a no-op there. (DayNum_t -> time_t converts the
+            # same way toFirstDayOfMonth(DayNum_t) already relies on.)
+            ns = ns.replace('.toWeek(', '.toFirstDayOfWeek(')
             if 'DateLUTSingleton' in ns:
                 ns = ns.replace('DateLUTSingleton::instance', 'DateLUT::instance').replace('DateLUTSingleton', 'DateLUT')
             ns = ref.sub(r'const auto & \1 = DateLUT::instance(\2)', ns)
