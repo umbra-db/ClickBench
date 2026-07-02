@@ -641,8 +641,11 @@ function renderSummary(filtered_data, baseline_data) {
     const any_enabled = [...Array(num_queries).keys()].some(queryEnabled);
 
     /// summaries[idx] = ratio (lower is better) used for the bar; value_text(idx) is the
-    /// number-cell label; metric_noun labels the column heading.
+    /// number-cell label; metric_noun labels the column heading. no_data[idx] flags a
+    /// version with no successful run in the current selection -- shown as a skull with a
+    /// black bar, and excluded from the bar scaling.
     let summaries, value_text, metric_noun;
+    let no_data = filtered_data.map(() => false);
 
     if (selectors.metric === 'load' || selectors.metric === 'size') {
         /// Rank by total load time / data size over the enabled datasets. A version
@@ -683,7 +686,11 @@ function renderSummary(filtered_data, baseline_data) {
             }
             return used ? Math.exp(accumulator / used) : 1;
         });
-        value_text = idx => `×${summaries[idx].toFixed(2)}`;
+        /// A version with no non-null run among the enabled queries has nothing to compare.
+        no_data = filtered_data.map(elem =>
+            ![...Array(num_queries).keys()].some(i =>
+                (!any_enabled || queryEnabled(i)) && selectRun(elem.result[i]) !== null));
+        value_text = idx => no_data[idx] ? '☠️' : `×${summaries[idx].toFixed(2)}`;
     }
     const noun_el = document.getElementById('metric-noun');
     if (noun_el) { noun_el.textContent = metric_noun; }
@@ -702,7 +709,7 @@ function renderSummary(filtered_data, baseline_data) {
         /// version wasn't bumped every commit), so break ties by the tag label.
         return c != 0 ? c : filtered_data[b].version.localeCompare(filtered_data[a].version, undefined, { numeric: true });
     });
-    const max_ratio = Math.max(...summaries.filter(x => x != null));
+    const max_ratio = Math.max(...summaries.filter((x, i) => x != null && !no_data[i]));
 
     sorted_indices.map(idx => {
         const elem = filtered_data[idx];
@@ -745,17 +752,22 @@ function renderSummary(filtered_data, baseline_data) {
         td_bar.className = 'summary-bar-cell';
         let bar = document.createElement('div');
         bar.className = 'summary-bar';
-        bar.style.background = `linear-gradient(to right,
-            var(--bar-color1) 0%,
-            var(--bar-color1) ${Math.min(100, percentage)}%,
-            var(--bar-color2) ${Math.min(100, percentage)}%,
-            var(--bar-color2) ${Math.min(100, percentage * 10)}%,
-            var(--bar-color3) ${Math.min(100, percentage * 10)}%,
-            var(--bar-color3) ${Math.min(100, percentage * 100)}%,
-            var(--bar-color4) ${Math.min(100, percentage * 100)}%,
-            var(--bar-color4) ${Math.min(100, percentage * 1000)}%,
-            transparent ${Math.min(100, percentage * 1000)}%,
-            transparent 100%)`;
+        if (no_data[idx]) {
+            /// No successful run in this selection: a solid black bar (paired with the skull).
+            bar.style.background = 'black';
+        } else {
+            bar.style.background = `linear-gradient(to right,
+                var(--bar-color1) 0%,
+                var(--bar-color1) ${Math.min(100, percentage)}%,
+                var(--bar-color2) ${Math.min(100, percentage)}%,
+                var(--bar-color2) ${Math.min(100, percentage * 10)}%,
+                var(--bar-color3) ${Math.min(100, percentage * 10)}%,
+                var(--bar-color3) ${Math.min(100, percentage * 100)}%,
+                var(--bar-color4) ${Math.min(100, percentage * 100)}%,
+                var(--bar-color4) ${Math.min(100, percentage * 1000)}%,
+                transparent ${Math.min(100, percentage * 1000)}%,
+                transparent 100%)`;
+        }
         td_bar.appendChild(bar);
 
         /// Release date shown over the bar, as on the main ClickBench page.
