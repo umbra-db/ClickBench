@@ -45,3 +45,6 @@
 2012-06-01	0b5d5b6a52ab4dd30f2ca6106bb7efdd904f9ddd	boots(pre-version())
 2012-05-01	8b958c4f698830cbf22c038c9fb44616a331ed44	boots(native-handshake,0.0.28558)
 2012-04-01	26096423fe53dccc5559952515fe421563cd23af	boots(native-handshake,0.0.28558)
+2012-03-01	c90243f7fe778ce4524341e5daad2a936bb8564f	pre-server(no dbms/src/Server; earliest server is 2012-04)
+2012-02-01	635f1638e2c6d5d70b3f95042398abdd2798648c	pre-server(no dbms/src/Server; earliest server is 2012-04)
+2012-01-01	7182920cecd3ec7d1e6fffd64ec52679d4e111ef	pre-server(no dbms/src/Server; earliest server is 2012-04)
