@@ -12,6 +12,8 @@ log.txt
 load_out.txt
 server.log
 server.pid
+server.endpoint
+server.endpoint.tmp
 arc_token.txt
 data-size.txt
 .doris_home
