@@ -1409,6 +1409,16 @@ if [ -f "$WH" ] && ! grep -q 'String toString' "$WH"; then
     } >> "$WH"
 fi
 
+# -- The back-ported Embedded RegionsHierarchy.h uses DB::toString but only includes
+#    ReadHelpers.h, relying on WriteHelpers.h (which carries toString) arriving
+#    transitively -- which it does in some eras but not others (e.g. 2013-03 fails).
+#    Make it self-sufficient by including WriteHelpers.h directly. Guarded on the file
+#    using toString and not already including it, so it's a no-op elsewhere. --
+RH_EMB=dbms/include/DB/Dictionaries/Embedded/RegionsHierarchy.h
+if [ -f "$RH_EMB" ] && grep -q 'DB::toString' "$RH_EMB" && ! grep -q 'IO/WriteHelpers.h' "$RH_EMB"; then
+    sed -i '/#pragma once/a #include <DB/IO/WriteHelpers.h>' "$RH_EMB"
+fi
+
 # -- ColumnWithNameAndType -> ColumnWithTypeAndName: the struct was renamed after
 #    2015-07. The back-ported SummingSorted uses the new name; add a compat alias so
 #    it resolves against the era's old type. Guarded on the old header existing and
