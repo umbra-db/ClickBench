@@ -290,8 +290,21 @@ dataset_fully_loaded() {
 # memory in check; a revive-and-retry pass then reloads anything that still failed,
 # sequentially, so a transient death doesn't leave the dataset permanently missing.
 load_data() {
-    local ds pids=() active=0 to_load=() attempt missing
+    local ds pids=() active=0 to_load=() attempt missing keep=""
     : > "${LOAD_STATS}"   # fresh per run; per-table load times accumulate here
+    # Prehistoric (date-labeled) and pre-Docker (revision < 53991) versions can't run the
+    # big/complex datasets (large joins job/tpcds/tpch, the 600M-row SSB lineorder_flat, the
+    # 500M-row coffeeshop fact), so never load them -- their queries record null as usual. On
+    # the VM run-benchmark.sh already drops these from the download + LOAD_DATASETS; this is
+    # the local (run-all.sh / direct) path's equivalent, and a safety net for the VM path.
+    if [[ "${VERSION}" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] || ! version_ge "${VERSION}" "53991"; then
+        for ds in ${LOAD_DATASETS}; do
+            case "${ds}" in ssb|tpch|tpcds|coffeeshop|job) continue ;; esac
+            keep+="${ds} "
+        done
+        LOAD_DATASETS="${keep% }"
+        echo "pre-Docker/prehistoric ${VERSION}: loading only [${LOAD_DATASETS}]" >&2
+    fi
     for ds in ${LOAD_DATASETS}; do
         if ! dataset_supported "${ds}"; then
             echo "=== skipping load of ${ds}: no query supported on ${VERSION} (all below min version) ===" >&2
