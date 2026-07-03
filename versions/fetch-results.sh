@@ -37,6 +37,7 @@ fi
 
 reldate() {
     local v="$1" d mm
+    [ "${v}" = "master" ] && { date -u +%F; return; }   # the dev tip: use the current date
     if [[ "${v}" =~ ^([0-9]+)\.([0-9]+)\. ]] && [ "${BASH_REMATCH[1]}" -ge 18 ]; then
         mm="${BASH_REMATCH[1]}.${BASH_REMATCH[2]}"
         [ -n "${GROUP_FIRST[$mm]:-}" ] && { printf '%s' "${GROUP_FIRST[$mm]}"; return; }

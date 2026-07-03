@@ -619,6 +619,7 @@ emit_data_size_json() {
 # fall back to their commit date in monthly.tsv (column 3).
 release_date() {
     local d
+    [ "${VERSION}" = "master" ] && { date -u +%F; return; }   # the dev tip: date it by the run day
     d=$(./list-versions.sh 2>/dev/null | awk -F'\t' -v v="${VERSION}" '$1==v{print $3; exit}')
     [ -z "${d}" ] && d=$(awk -F'\t' -v v="${VERSION}" '$1==v{print $3; exit}' "${HERE}/build-from-source/monthly.tsv" 2>/dev/null)
     printf '%s' "${d}"
