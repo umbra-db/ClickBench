@@ -43,8 +43,8 @@ PHASE="${3:-all}"
 # server as a background process out of LOCAL_DIR (which then holds its data). Loading,
 # queries and sizing are otherwise identical to the Docker path.
 LOCAL=""; [ "${IMAGE}" = "local" ] && LOCAL=1
-LOCAL_DIR="${HERE}/.local-server"
-LOCAL_BIN="${LOCAL_DIR}/clickhouse"
+LOCAL_DIR="${HERE}/.local-server"   # where curl|sh drops the binary before `clickhouse install`
+SUDO=""; [ "$(id -u)" -ne 0 ] && SUDO=sudo   # `clickhouse install/start/stop` need root; cloud-init already is
 
 CONTAINER="chver_${VERSION//[^0-9A-Za-z]/_}"
 OUT="${HERE}/results/${VERSION}.json"
@@ -78,11 +78,9 @@ declare -A TABLES=(
 QUERY_ORDER="mgbench ssb hits uk ontime taxi coffeeshop tpch tpcds job"
 
 cleanup() {
-    if [ -n "${LOCAL}" ]; then
-        [ -f "${LOCAL_DIR}/server.pid" ] && kill "$(cat "${LOCAL_DIR}/server.pid")" 2>/dev/null
-        pkill -f "${LOCAL_BIN} server" 2>/dev/null
-        return 0
-    fi
+    # `clickhouse stop` manages the daemon via its own pidfile and returns once stopped, so
+    # there is nothing for this shell to wait on (the earlier nohup approach could hang here).
+    [ -n "${LOCAL}" ] && { ${SUDO} clickhouse stop >/dev/null 2>&1 || true; return 0; }
     sudo docker rm -f "${CONTAINER}" >/dev/null 2>&1
 }
 # The load phase must leave the container running for the later bench phase;
@@ -115,8 +113,9 @@ exec_client()    { sudo ${CH_TIMEOUT:+timeout ${CH_TIMEOUT}} docker exec -i -e H
 sidecar_client() { sudo ${CH_TIMEOUT:+timeout ${CH_TIMEOUT}} docker run --rm -i -e HOME=/tmp -e TZ=UTC \
                        -v /usr/share/zoneinfo:/usr/share/zoneinfo:ro \
                        --network "container:${CONTAINER}" "${CLIENT_IMAGE}" "$@"; }
-# local provider: the installed binary, connecting to the host server over TCP.
-local_client()   { ${CH_TIMEOUT:+timeout ${CH_TIMEOUT}} env HOME=/tmp TZ=UTC "${LOCAL_BIN}" client "$@"; }
+# local provider: the installed clickhouse client (on PATH after `clickhouse install`),
+# connecting to the host server over TCP.
+local_client()   { ${CH_TIMEOUT:+timeout ${CH_TIMEOUT}} env HOME=/tmp TZ=UTC clickhouse client "$@"; }
 client() {
     case "${CLIENT_MODE}" in
         local)   local_client "$@" ;;
@@ -180,13 +179,18 @@ ensure_built_image() {
 start_server() {
     cleanup
     if [ -n "${LOCAL}" ]; then
-        # No Docker: install with the official one-liner (once) and run the server on the
-        # host, out of LOCAL_DIR so its data lands there.
-        echo "starting ${VERSION} via the local installer (curl https://clickhouse.com/ | sh)" >&2
+        # No Docker: fetch the master build with the official one-liner, then install and
+        # start it as a normal system service (curl|sh -> ./clickhouse install -> clickhouse
+        # start). The service daemonises itself and `clickhouse stop` stops it cleanly, so no
+        # backgrounding/pidfile juggling here.
+        echo "starting ${VERSION}: curl https://clickhouse.com/ | sh  ->  clickhouse install  ->  clickhouse start" >&2
         mkdir -p "${LOCAL_DIR}"
-        [ -x "${LOCAL_BIN}" ] || ( cd "${LOCAL_DIR}" && curl -fsSL https://clickhouse.com/ | sh ) >&2
-        [ -x "${LOCAL_BIN}" ] || { echo "local install failed: ${LOCAL_BIN} missing" >&2; return 1; }
-        ( cd "${LOCAL_DIR}" && HOME=/tmp TZ=UTC nohup ./clickhouse server > server.log 2>&1 & echo $! > server.pid )
+        ( cd "${LOCAL_DIR}" && curl -fsSL https://clickhouse.com/ | sh ) >&2
+        [ -x "${LOCAL_DIR}/clickhouse" ] || { echo "local install failed: ${LOCAL_DIR}/clickhouse missing" >&2; return 1; }
+        ${SUDO} "${LOCAL_DIR}/clickhouse" install --noninteractive >&2 2>&1 </dev/null \
+            || ${SUDO} "${LOCAL_DIR}/clickhouse" install >&2 2>&1 </dev/null \
+            || { echo "clickhouse install failed" >&2; return 1; }
+        ${SUDO} clickhouse start >&2 2>&1
         CLIENT_MODE=local
         local i
         for i in $(seq 1 "${READY_TIMEOUT:-90}"); do
@@ -194,7 +198,7 @@ start_server() {
             sleep 1
         done
         echo "local server ${VERSION} did not become ready; last log lines:" >&2
-        tail -20 "${LOCAL_DIR}/server.log" >&2 2>&1 || true
+        ${SUDO} tail -20 /var/log/clickhouse-server/clickhouse-server.err.log >&2 2>&1 || true
         return 1
     fi
     if [ "${IMAGE}" = "package" ]; then
@@ -405,9 +409,9 @@ launch_daemon_in_container() {
 wait_alive() { local i; for i in $(seq 1 "${1:-180}"); do server_alive && return 0; sleep 1; done; return 1; }
 revive_server() {
     if [ -n "${LOCAL}" ]; then
-        echo "${VERSION}: relaunching local server; recent log:" >&2
-        tail -8 "${LOCAL_DIR}/server.log" 2>&1 | sed 's/^/      | /' >&2 || true
-        ( cd "${LOCAL_DIR}" && HOME=/tmp TZ=UTC nohup ./clickhouse server >> server.log 2>&1 & echo $! > server.pid )
+        echo "${VERSION}: relaunching local server (clickhouse start); recent log:" >&2
+        ${SUDO} tail -8 /var/log/clickhouse-server/clickhouse-server.err.log 2>&1 | sed 's/^/      | /' >&2 || true
+        ${SUDO} clickhouse start >&2 2>&1
         wait_alive "${REVIVE_TIMEOUT:-180}" && { echo "${VERSION}: local server back up" >&2; return 0; }
         echo "${VERSION}: local server did not come back" >&2; return 1
     fi
@@ -615,6 +619,7 @@ emit_data_size_json() {
 # fall back to their commit date in monthly.tsv (column 3).
 release_date() {
     local d
+    [ "${VERSION}" = "master" ] && { date -u +%F; return; }   # the dev tip: date it by the run day
     d=$(./list-versions.sh 2>/dev/null | awk -F'\t' -v v="${VERSION}" '$1==v{print $3; exit}')
     [ -z "${d}" ] && d=$(awk -F'\t' -v v="${VERSION}" '$1==v{print $3; exit}' "${HERE}/build-from-source/monthly.tsv" 2>/dev/null)
     printf '%s' "${d}"
