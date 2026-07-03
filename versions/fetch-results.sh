@@ -114,3 +114,8 @@ for f in results/*.json; do
         rm -f "${f}"; echo "  dropped ${v}.json (duplicate of ${av})" >&2
     fi
 done
+
+# Normalise every result to the current per-query minimum versions (queries/*.minver):
+# the sink stores what each version produced under the minvers in effect WHEN it ran, which
+# may predate the current ones, so re-apply them here for consistency (idempotent).
+python3 "${HERE}/apply-minvers.py"
