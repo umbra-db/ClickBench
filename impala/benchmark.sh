@@ -1,5 +1,4 @@
 #!/bin/bash
-# Thin shim — actual flow is in lib/benchmark-common.sh.
 #
 # First-cold Impala start has to bootstrap the Hive metastore schema,
 # wait for catalogd to register with statestored, and only then does
