@@ -1,6 +1,0 @@
-#!/bin/bash
-set -e
-
-# Cayenne file-mode acceleration data (segments + metastore), written by
-# the runtime under ./.spice.
-du -sb .spice | cut -f1
