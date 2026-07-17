@@ -1,5 +1,5 @@
 {
-    "system": "Salesforce Hyper (Parquet)",
+    "system": "Salesforce Hyper (Parquet, partitioned)",
     "date": "2026-06-30",
     "machine": "c6a.large",
     "cluster_size": 1,
