@@ -1,0 +1,40 @@
+name: "Run a benchmark"
+
+run-name: "Benchmark ${{ inputs.systems }} on ${{ inputs.machines }} from ${{ inputs.repo }}@${{ inputs.branch }}"
+
+on:
+  workflow_dispatch:
+    inputs:
+      systems:
+        description: "Systems to benchmark (directory names, space-separated)"
+        required: true
+      machines:
+        description: "EC2 instance types (space-separated)"
+        default: "c6a.4xlarge"
+      repo:
+        description: "Repository to clone on the machine"
+        default: "ClickHouse/ClickBench"
+      branch:
+        description: "Branch to clone"
+        default: "main"
+      timeout:
+        description: "Time limit for benchmark.sh, seconds"
+        default: "36000"
+
+permissions:
+  id-token: write  # To assume the federated IAM role.
+  contents: read
+
+jobs:
+  launch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/launch-benchmark
+        with:
+          systems: ${{ inputs.systems }}
+          machines: ${{ inputs.machines }}
+          repo: ${{ inputs.repo }}
+          branch: ${{ inputs.branch }}
+          timeout: ${{ inputs.timeout }}
