@@ -16,6 +16,7 @@ apart from the runs of main and are excluded by `collect-results.sh`.
 | `benchmark-daily.yml` | daily, 02:00 UTC | the ClickHouse variants, each on the whole set of machine types, from main |
 | `benchmark-manual.yml` | manual | any systems, machines, repository and branch |
 | `benchmark-pr.yml` | pull requests | the systems whose directories the PR changes (results and *.md files don't count), from the PR's repository and branch, after manual approval |
+| `collect-results.yml` | every 30 minutes | nothing - it collects the runs of the last day from the sink database (`collect-new-results.py`): commits result files and posts pastila.nl log links to the corresponding PR, or maintains one automated results PR per system for the runs of main |
 
 ## Setup
 
