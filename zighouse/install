@@ -1,10 +1,17 @@
 #!/bin/bash
 set -e
 
-: "${ZIGHOUSE_VERSION:=v0.2.0-clickbench}"
-: "${ZIGHOUSE_SHA256:=5c30c8e3a56639a1d769ff1d3246c91109c47e9c97e776aec046519dcc66f3a6}"
+# Download a generic ZigHouse release binary (not a ClickBench-specific build)
+# from https://github.com/donge/zighouse/releases and verify its checksum.
+#
+# Release assets are gzip-compressed, so we decompress before checking the
+# SHA256 of the resulting executable.
+: "${ZIGHOUSE_VERSION:=v1.0.2}"
+# SHA256 of the *decompressed* linux-x86_64 binary.
+: "${ZIGHOUSE_SHA256:=ad6f0a6a98be1a6dac6a4bc99c4162a97e828ff273ee6417823c0ebf88f6470b}"
 
-url="https://github.com/donge/zighouse/releases/download/${ZIGHOUSE_VERSION}/zighouse-linux-x86_64"
-curl -L --fail -o zighouse "$url"
+url="https://github.com/donge/zighouse/releases/download/${ZIGHOUSE_VERSION}/zighouse-linux-x86_64.gz"
+curl -L --fail -o zighouse.gz "$url"
+gunzip -f zighouse.gz
 printf '%s  zighouse\n' "$ZIGHOUSE_SHA256" | sha256sum -c -
 chmod +x zighouse
