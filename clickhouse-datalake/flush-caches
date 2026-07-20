@@ -2,4 +2,4 @@
 # Remove the ClickHouse filesystem cache so the cold try is really cold.
 # The harness already drops the OS page cache; this drops the layer the
 # kernel can't see.
-rm -rf cache/
+rm -rf /dev/shm/clickhouse
