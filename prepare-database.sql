@@ -94,6 +94,15 @@ SELECT time, system, machine, system_name, proprietary, tuned, tags, total_time,
 FROM sink.data
 WHERE time >= yesterday() AND content NOT LIKE 'Cloud-init%' AND good;
 
+-- Read-only user for the results collection automation
+-- (collect-new-results.py). The password is in the CLICKBENCH_DB_PASSWORD
+-- GitHub secret of ClickHouse/ClickBench.
+CREATE USER clickbench IDENTIFIED WITH sha256_password BY '<password>'
+SETTINGS readonly = 1;
+
+GRANT SELECT ON sink.data TO clickbench;
+GRANT SELECT ON sink.results TO clickbench;
+
 CREATE USER sink IDENTIFIED WITH no_password
 DEFAULT DATABASE sink
 SETTINGS
