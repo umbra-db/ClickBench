@@ -63,12 +63,28 @@ jobs:
 
           # "machine:<ec2-type>" labels override the default machine, e.g.
           # machine:c6a.metal for systems that don't fit in the 32 GB of
-          # c6a.4xlarge. Multiple labels launch one run per machine. Labels
-          # can only be set by users with triage access, and the launch is
-          # still gated by the benchmark-approval environment.
-          machines=$(jq -r '[.pull_request.labels[].name
+          # c6a.4xlarge. Multiple labels launch one run per machine, and
+          # machine:all, machine:all-amd and machine:all-arm expand to the
+          # machine sets of the daily runs (keep in sync with
+          # benchmark-daily.yml). Labels can only be set by users with
+          # triage access, and the launch is still gated by the
+          # benchmark-approval environment.
+          amd="t3a.small c6a.large c6a.xlarge c6a.2xlarge c6a.4xlarge c6a.metal c7a.metal-48xl"
+          arm="c8g.4xlarge c8g.metal-48xl"
+          labels=$(jq -r '[.pull_request.labels[].name
               | select(startswith("machine:")) | ltrimstr("machine:")]
               | join(" ")' "$GITHUB_EVENT_PATH")
+          machines=""
+          for label in $labels; do
+              case "$label" in
+                  all)     machines="$machines $amd $arm";;
+                  all-amd) machines="$machines $amd";;
+                  all-arm) machines="$machines $arm";;
+                  *)       machines="$machines $label";;
+              esac
+          done
+          machines=$(printf '%s\n' $machines | awk '!seen[$0]++' | tr '\n' ' ')
+          machines="${machines% }"
           machines="${machines:-c6a.4xlarge}"
           echo "Machines: $machines"
           echo "machines=$machines" >> "$GITHUB_OUTPUT"
