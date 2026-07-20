@@ -5,8 +5,15 @@ if [ ! -x ./clickhouse ]; then
     curl https://clickhouse.com/ | sh
 fi
 
-# Use a userspace page cache sized to ~80% of RAM for S3 object reads.
-RAM=$(awk '/MemTotal/ {print int($2 * 0.8 * 1024)}' /proc/meminfo)
+# Configure a disk-backed filesystem cache for S3 object reads. Unlike the
+# userspace page cache (in-process RAM, lost when the per-query
+# clickhouse-local process exits), the filesystem cache persists on disk
+# across ./query invocations, so the second and third tries of each query
+# are served from the local cache instead of re-fetching from S3.
+# ./flush-caches removes it before each query's cold try.
 cat > clickhouse-local.yaml <<YAML
-page_cache_max_size: ${RAM}
+filesystem_caches:
+    cache:
+        path: '$(pwd)/cache/'
+        max_size: '16G'
 YAML
