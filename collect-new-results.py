@@ -408,9 +408,10 @@ def process_pr(pr_number, rows):
     if good:
         by_system = {}
         for r in good:
-            by_system.setdefault(r["system"], []).append(f"`{r['machine']}`")
+            by_system.setdefault(r["system"], set()).add(r["machine"])
         for system, machines in sorted(by_system.items()):
-            lines.append(f"Results for `{system}` are ready for: {', '.join(machines)}.")
+            lines.append(f"Results for `{system}` are ready for: "
+                         + ", ".join(f"`{m}`" for m in sorted(machines)) + ".")
         if commit:
             lines.append(f"The result files are committed as {commit}.")
         elif can_commit:
@@ -423,10 +424,9 @@ def process_pr(pr_number, rows):
         if removals:
             lines.append("Removed manually added result files: "
                          + ", ".join(f"`{path}`" for path in removals) + ".")
-    for r in rows:
-        if not r["good"]:
-            lines.append(f"The run of `{r['system']}` on `{r['machine']}` "
-                         "did not produce results.")
+    for system, machine in sorted({(r["system"], r["machine"]) for r in rows
+                                   if not r["good"]}):
+        lines.append(f"The run of `{system}` on `{machine}` did not produce results.")
     lines.append("")
     lines.append("Logs:")
     for r in rows:
@@ -474,9 +474,9 @@ def process_main(system, rows):
 
     lines = []
     commit = None
-    machines = ", ".join(sorted({r["machine"] for r in good}))
+    machines = sorted({r["machine"] for r in good})
     if good:
-        message = f"Add results for {system} ({machines})"
+        message = f"Add results for {system} ({', '.join(machines)})"
         if pr:
             commit = commit_results(fetch_branch(branch), good, [], message, branch)
         else:
@@ -484,11 +484,11 @@ def process_main(system, rows):
                                     good, [], message, branch, force=True)
     if good:
         lines.append(f"Results for `{system}` are ready for: "
-                     + ", ".join(f"`{r['machine']}`" for r in good) + ".")
+                     + ", ".join(f"`{m}`" for m in machines) + ".")
         if commit:
             lines.append(f"The result files are committed as {commit}.")
-    for r in failed:
-        lines.append(f"The run on `{r['machine']}` did not produce results.")
+    for machine in sorted({r["machine"] for r in failed}):
+        lines.append(f"The run on `{machine}` did not produce results.")
     lines.append("")
     lines.append("Logs:")
     for r in rows:
