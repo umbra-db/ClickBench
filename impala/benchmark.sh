@@ -1,5 +1,4 @@
 #!/bin/bash
-# Thin shim — actual flow is in lib/benchmark-common.sh.
 #
 # First-cold Impala start has to bootstrap the Hive metastore schema,
 # wait for catalogd to register with statestored, and only then does
@@ -17,7 +16,6 @@
 # ClickBench bottleneck — without losing the catalog state that ./load
 # put into the running cluster.
 export BENCH_DOWNLOAD_SCRIPT="download-hits-parquet-single"
-export BENCH_DURABLE=yes
 export BENCH_RESTARTABLE=no
 export BENCH_CHECK_TIMEOUT=900
 exec ../lib/benchmark-common.sh

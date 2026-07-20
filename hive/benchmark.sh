@@ -1,5 +1,4 @@
 #!/bin/bash
-# Thin shim — actual flow is in lib/benchmark-common.sh.
 export BENCH_DOWNLOAD_SCRIPT="download-hits-parquet-single"
 # Embedded Derby metastore lives in the container's writable layer;
 # the cold-cycle docker rm + docker run in ./start wipes it. ./load
