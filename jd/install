@@ -50,7 +50,15 @@ sudo chmod +x /usr/local/bin/ijconsole
 
 # Install Jd plus its addon dependency chain. Each install_jpkg_ call
 # pulls a fresh tarball from raw.githubusercontent.com.
-ijconsole </dev/null <<'JEOF'
+#
+# Run this under the REAL clock (the raw jconsole binary), not the
+# faketime `ijconsole` wrapper. pacman shells out to the system curl;
+# under the backdated clock the GitHub/jsoftware TLS certificate reads
+# as "not yet valid" and every download fails ("certificate is not yet
+# valid"), so no addons install and `load 'data/jd/jd'` later dies with
+# a file-name error. faketime is only needed at Jd *runtime* for the
+# license key, not for these downloads.
+"$HOME/j9.6/bin/jconsole" </dev/null <<'JEOF'
 load 'pacman'
 install_jpkg_ 'data/jd'
 install_jpkg_ 'api/curl'
