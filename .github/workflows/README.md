@@ -53,3 +53,17 @@ apart from the runs of main and are excluded by `collect-results.sh`.
    systems. `run-benchmark.sh` waits and retries while the quota or the
    capacity is exhausted, but only within the job's 55-minute limit; what
    could not be launched by then is reported as failed.
+
+4. Optional: a `CLICKBENCH_FORK_PUSH_TOKEN` secret for `collect-results.yml`,
+   holding a **classic** PAT (`public_repo` scope) of a user with write
+   access to this repository — a dedicated machine account is recommended,
+   since a classic PAT can push to every public repository its owner can
+   write to. With it, the collector commits result files directly to fork
+   PRs whose author allows maintainer edits. Without it (or when the author
+   unticked "Allow edits by maintainers", or the fork is organization-owned,
+   where GitHub does not offer maintainer edits), fork results are posted as
+   pastila.nl links for the author to commit. The workflow's own
+   `GITHUB_TOKEN` can never push to forks: GitHub grants the maintainer-edit
+   push permission only to user accounts, not to App installation tokens.
+   A fine-grained PAT does not work either — it is bound to an explicit
+   repository list, which cannot include arbitrary contributors' forks.

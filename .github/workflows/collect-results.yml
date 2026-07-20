@@ -22,4 +22,8 @@ jobs:
       - env:
           GH_TOKEN: ${{ github.token }}
           CLICKBENCH_DB_PASSWORD: ${{ secrets.CLICKBENCH_DB_PASSWORD }}
+          # Optional classic PAT of a user with write access: enables
+          # committing results to fork PRs that allow maintainer edits
+          # (GITHUB_TOKEN cannot push to forks). See the README.
+          CLICKBENCH_FORK_PUSH_TOKEN: ${{ secrets.CLICKBENCH_FORK_PUSH_TOKEN }}
         run: python3 collect-new-results.py
