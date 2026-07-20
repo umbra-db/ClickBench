@@ -1,6 +1,47 @@
 #!/bin/bash
-set -e
+set -euo pipefail
 
-rm -rf zighouse-store
-ZIGHOUSE_CLICKBENCH_SUBMIT=1 ZIGHOUSE_IMPORT_TRACE=1 ./zighouse import-clickbench-parquet-hot hits.parquet zighouse-store
+# ZigHouse's generic HTTP server ingests JSONEachRow (it cannot read Parquet or
+# TSV directly). We stream the ClickBench hits.json dataset to it in chunks:
+# the server buffers each request body whole and rejects anything over 256 MiB,
+# and `split -C` keeps every JSON line intact within a chunk.
+SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+: "${ZIGHOUSE_PORT:=28123}"
+: "${ZIGHOUSE_LOAD_CHUNK:=200M}"
+http_port=$((ZIGHOUSE_PORT + 1))
+base="http://127.0.0.1:${http_port}"
+
+# --- Fetch the dataset (JSONEachRow). Prefer the playground's pre-staged
+#     read-only copy; otherwise download and decompress. --------------------
+if [ ! -e hits.json ]; then
+    if [ -f /opt/clickbench/datasets_ro/hits.json ]; then
+        ln -sf /opt/clickbench/datasets_ro/hits.json hits.json
+    elif [ -f /opt/clickbench/datasets_ro/hits.json.gz ]; then
+        sudo apt-get install -y pigz
+        pigz -d -k -c /opt/clickbench/datasets_ro/hits.json.gz > hits.json
+    else
+        sudo apt-get install -y pigz
+        wget --continue --progress=dot:giga \
+            'https://datasets.clickhouse.com/hits_compatible/hits.json.gz'
+        pigz -d -f hits.json.gz
+    fi
+fi
+
+# --- Schema --------------------------------------------------------------
+curl -sS --fail-with-body -G "${base}/" \
+    --data-urlencode "query=$(cat "${SCRIPT_DIR}/create.sql")" >/dev/null
+
+# --- Bulk load: stream hits.json to the server in <=chunk-sized, line-aligned
+#     pieces, each posted as `INSERT INTO hits FORMAT JSONEachRow`. ----------
+export ZIGHOUSE_INSERT_URL="${base}/?query=INSERT%20INTO%20hits%20FORMAT%20JSONEachRow"
+split -C "${ZIGHOUSE_LOAD_CHUNK}" \
+    --filter='curl -sS --fail-with-body --data-binary @- "$ZIGHOUSE_INSERT_URL" >/dev/null' \
+    hits.json
+
 sync
+
+# hits.json (a symlink or a downloaded copy) is only needed for the load.
+rm -f hits.json hits.json.gz
+
+# --- Post-load smoke test of the generic SQL engine (see generic-smoke.sh).
+"${SCRIPT_DIR}/generic-smoke.sh"

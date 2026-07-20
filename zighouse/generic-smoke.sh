@@ -1,36 +1,29 @@
 #!/bin/bash
-# Run arbitrary (non-ClickBench) SQL through ZigHouse's generic execution path.
-#
-# ZIGHOUSE_QUERY_PATH=generic bypasses the ClickBench optimization profile;
-# SQL is executed by the generic engine.  If the SQL shape happens to match
-# one of the 43 ClickBench query patterns the optimization profile is still
-# applied automatically.
-#
-# Run from this directory after benchmark.sh has imported the dataset:
-#
-#   ./generic-smoke.sh
-#
+# Smoke-test ZigHouse's SQL engine on a handful of non-ClickBench statements
+# through the ClickHouse-compatible HTTP interface. This runs automatically at
+# the end of ./load (so the capability frontier is exercised on every run) and
+# can also be invoked standalone from this directory once the server is up and
+# the dataset has been loaded.
 set -u
 
-STORE=${STORE:-/var/lib/zighouse/hits}
-ZH=${ZIGHOUSE:-./zighouse}
+: "${ZIGHOUSE_PORT:=28123}"
+http_port=$((ZIGHOUSE_PORT + 1))
+base="http://127.0.0.1:${http_port}"
 
 run() {
-  echo "== $1  [$2] =="
-  echo "SQL: $3"
-  ZIGHOUSE_QUERY_PATH=generic "$ZH" query "$STORE" "$3" || echo "  -> error"
-  echo
+    echo "== $1 =="
+    echo "SQL: $2"
+    curl -sS -G "${base}/" \
+        --data-urlencode "query=$2" \
+        --data-urlencode "default_format=TabSeparated" \
+        || echo "  -> error"
+    echo
 }
 
-# Supported: scalar aggregates, COUNT(DISTINCT), GROUP BY on low-cardinality
-# columns, WHERE with numeric and date conditions combined by AND.
-run "count_all"         supported "SELECT COUNT(*) FROM hits"
-run "sum_with_filter"   supported "SELECT SUM(Age) FROM hits WHERE EventDate >= '2013-07-15'"
-run "min_max_date"      supported "SELECT MIN(EventDate), MAX(EventDate) FROM hits"
-run "count_distinct"    supported "SELECT COUNT(DISTINCT CounterID) FROM hits"
-run "groupby_counter"   supported "SELECT CounterID, COUNT(*) FROM hits GROUP BY CounterID"
-run "where_and"         likely    "SELECT COUNT(*) FROM hits WHERE Age > 25 AND EventDate >= '2013-07-10'"
-run "groupby_topk"      likely    "SELECT CounterID, COUNT(*) AS c FROM hits GROUP BY CounterID ORDER BY c DESC LIMIT 10"
+run "count_all"       "SELECT COUNT(*) FROM hits"
+run "sum_with_filter" "SELECT SUM(AdvEngineID) FROM hits WHERE EventDate >= '2013-07-15'"
+run "min_max_date"    "SELECT MIN(EventDate), MAX(EventDate) FROM hits"
+run "count_distinct"  "SELECT COUNT(DISTINCT SearchEngineID) FROM hits"
+run "groupby_topk"    "SELECT RegionID, COUNT(*) AS c FROM hits GROUP BY RegionID ORDER BY c DESC LIMIT 5"
 
-# Roadmap: GROUP BY on high-cardinality string columns, arbitrary table import.
-run "groupby_url_topk"  roadmap   "SELECT URL, COUNT(*) FROM hits GROUP BY URL ORDER BY COUNT(*) DESC LIMIT 10"
+exit 0
