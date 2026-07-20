@@ -16,8 +16,10 @@ fi
 # container holding the port or a stale bind-mount path.
 sudo docker rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
 
+# /data is writable: hyriseConsole exports the binary snapshot there on the
+# first ./load.
 sudo docker run -d --name "$CONTAINER_NAME" \
     -p 5432:5432 \
-    -v "$(pwd)/data:/data:ro" \
+    -v "$(pwd)/data:/data" \
     --ulimit nofile=1048576:1048576 \
     clickbench-hyrise >/dev/null

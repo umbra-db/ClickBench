@@ -57,14 +57,20 @@ RUN git clone https://github.com/hyrise/hyrise.git \
     && git checkout "${HYRISE_REF}" \
     && git submodule update --jobs 8 --init --recursive --depth 1
 
+# hyriseConsole is shipped alongside the server because its `export` command
+# reads tables via GetTable without the MVCC Validate wrapper — SQL `COPY TO`
+# validates, and BinaryWriter materializes the resulting ReferenceSegments as
+# unencoded value segments, which would make the snapshot raw-sized and make
+# it re-import unencoded. See ./load.
 WORKDIR /opt/hyrise/cmake-build-release
 RUN cmake -GNinja -DCMAKE_BUILD_TYPE=Release -DNO_LTO=${NO_LTO} .. \
-    && ninja hyriseServer
+    && ninja hyriseServer hyriseConsole
 
 FROM ubuntu:25.04
 ENV DEBIAN_FRONTEND=noninteractive
 # libboost-container/date-time: libhyrise_impl.so links them dynamically
 # (they are not dependencies of boost-system/thread, so they must be listed).
+# libreadline8t64 + libncurses6: hyriseConsole.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         libboost-container1.83.0 \
@@ -72,13 +78,16 @@ RUN apt-get update \
         libboost-system1.83.0 \
         libboost-thread1.83.0 \
         libhwloc15 \
+        libncurses6 \
         libnuma1 \
+        libreadline8t64 \
         libsqlite3-0 \
         libtbb12 \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=build /opt/hyrise/cmake-build-release/hyriseServer /usr/local/bin/hyriseServer
+COPY --from=build /opt/hyrise/cmake-build-release/hyriseConsole /usr/local/bin/hyriseConsole
 COPY --from=build /opt/hyrise/cmake-build-release/lib/libhyrise_impl.so /usr/local/lib/
 COPY --from=build /opt/hyrise/cmake-build-release/third_party/jemalloc/lib/libjemalloc.so.2 /usr/local/lib/
 RUN ldconfig
