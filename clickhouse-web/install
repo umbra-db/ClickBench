@@ -1,12 +1,12 @@
 #!/bin/bash
-set -e
+set -e -o pipefail
 
 # Note: this benchmark expects to run in eu-central-1 (Frankfurt) on an
 # n-class network-optimized machine (e.g. c5n.4xlarge), since data is fetched
 # over HTTP from a public ClickHouse-hosted dataset.
 
 if [ ! -x /usr/bin/clickhouse ]; then
-    curl https://clickhouse.com/ | sh
+    curl -fsSL --retry 10 --retry-delay 60 --retry-all-errors https://clickhouse.com/ | sh
     sudo ./clickhouse install --noninteractive
 fi
 
