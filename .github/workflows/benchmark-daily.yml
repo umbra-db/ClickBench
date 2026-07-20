@@ -1,0 +1,35 @@
+name: "Daily benchmarks: ClickHouse"
+
+on:
+  workflow_dispatch:  # This allows manual trigger from the UI
+  schedule:
+    - cron: '0 2 * * *'
+
+permissions:
+  id-token: write  # To assume the federated IAM role.
+  contents: read
+
+jobs:
+  launch:
+    name: ${{ matrix.system }}
+    runs-on: ubuntu-latest
+    # The AWS session lasts an hour; run-benchmark.sh retries while the vCPU
+    # quota is exhausted, so cap the job before the credentials expire.
+    timeout-minutes: 55
+    strategy:
+      fail-fast: false
+      matrix:
+        system:
+          - clickhouse
+          - clickhouse-web
+          - clickhouse-parquet
+          - clickhouse-parquet-partitioned
+          - clickhouse-datalake
+          - clickhouse-datalake-partitioned
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/launch-benchmark
+        with:
+          system: ${{ matrix.system }}
+          role-to-assume: ${{ vars.BENCHMARK_AWS_ROLE_ARN }}
+          aws-region: ${{ vars.BENCHMARK_AWS_REGION }}

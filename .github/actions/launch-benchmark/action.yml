@@ -1,0 +1,62 @@
+name: "Launch benchmark"
+description: >
+  Assume the federated AWS IAM role and launch an EC2 machine that runs one
+  benchmark unattended. The runner only launches: run-benchmark.sh renders
+  cloud-init.sh.in and calls ec2 run-instances; the machine clones the
+  repository, runs <system>/benchmark.sh, sends its log to the results sink
+  and terminates itself.
+
+inputs:
+  system:
+    description: "System to benchmark: a directory name, e.g. clickhouse-parquet"
+    required: true
+  machine:
+    description: "EC2 instance type"
+    default: "c6a.4xlarge"
+  repo:
+    description: "GitHub repository (owner/name) the machine will clone"
+    default: "ClickHouse/ClickBench"
+  branch:
+    description: "Branch of that repository to clone"
+    default: "main"
+  timeout:
+    description: "Time limit for benchmark.sh on the machine, seconds"
+    default: "36000"
+  role-to-assume:
+    description: "ARN of the federated IAM role that can launch EC2 machines"
+    required: true
+  aws-region:
+    description: "AWS region to launch the machine in"
+    required: true
+
+runs:
+  using: "composite"
+  steps:
+    - id: check
+      shell: bash
+      env:
+        role: ${{ inputs.role-to-assume }}
+      run: |
+        if [ -z "$role" ]; then
+          echo "The BENCHMARK_AWS_ROLE_ARN repository variable is not set. Skipping."
+          echo "configured=false" >> "$GITHUB_OUTPUT"
+        else
+          echo "configured=true" >> "$GITHUB_OUTPUT"
+        fi
+
+    - if: steps.check.outputs.configured == 'true'
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        role-to-assume: ${{ inputs.role-to-assume }}
+        aws-region: ${{ inputs.aws-region }}
+        role-session-name: clickbench-${{ github.run_id }}
+
+    - if: steps.check.outputs.configured == 'true'
+      shell: bash
+      env:
+        system: ${{ inputs.system }}
+        machine: ${{ inputs.machine }}
+        repo: ${{ inputs.repo }}
+        branch: ${{ inputs.branch }}
+        timeout: ${{ inputs.timeout }}
+      run: ./run-benchmark.sh
