@@ -28,4 +28,6 @@ jobs:
           # robot-clickhouse token is used; the robot needs write access
           # here, or fork results fall back to paste links. See the README.
           CLICKBENCH_FORK_PUSH_TOKEN: ${{ secrets.ROBOT_CLICKHOUSE_COMMIT_TOKEN }}
-        run: python3 collect-new-results.py
+        # Temporarily hijacked to test the fork push on this branch:
+        # dispatched with --ref push-results-to-forks. To be reverted.
+        run: python3 test-fork-push.py 982 5027900810
