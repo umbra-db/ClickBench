@@ -83,10 +83,12 @@ def ch(sql, **params):
         return str(value).replace("\\", "\\\\").replace("\n", "\\n") \
             .replace("\t", "\\t").replace("\r", "\\r")
 
-    url = DB_URL
-    if params:
-        encoded = urllib.parse.urlencode({f"param_{k}": escape(v) for k, v in params.items()})
-        url += ("&" if "?" in url else "?") + encoded
+    # The URL must carry at least one query parameter: play.clickhouse.com
+    # redirects the bare / to the UI, and urllib follows the redirect as a
+    # GET, losing the query and returning HTML instead of the result.
+    query = {"default_format": "JSON"}
+    query.update({f"param_{k}": escape(v) for k, v in params.items()})
+    url = DB_URL + ("&" if "?" in DB_URL else "?") + urllib.parse.urlencode(query)
     headers = {"X-ClickHouse-User": DB_USER}
     if DB_PASSWORD:
         headers["X-ClickHouse-Key"] = DB_PASSWORD
