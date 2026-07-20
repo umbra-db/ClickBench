@@ -8,7 +8,10 @@ pushd clickhouse-benchmark
 
 # Download the binary
 if [[ ! -x clickhouse ]]; then
-    curl https://clickhouse.com/ | sh
+    # -f and retries: when the whole daily fleet downloads at once,
+    # clickhouse.com occasionally answers 429, and without -f the error page
+    # would be piped into sh.
+    curl -fsSL --retry 10 --retry-delay 60 --retry-all-errors https://clickhouse.com/ | sh
 fi
 
 if [[ ! -f $QUERIES_FILE ]]; then
