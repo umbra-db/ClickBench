@@ -45,9 +45,11 @@ RUN apt-get update \
 
 # Pin a specific Hyrise revision for reproducibility (defaults to master).
 ARG HYRISE_REF=master
-# Set NO_LTO=TRUE to disable Link Time Optimization (much faster build, slightly
-# lower runtime performance — useful for development/testing). Default: LTO on.
-ARG NO_LTO=FALSE
+# LTO is off by default: GCC's `-flto=auto` link of libhyrise_impl.so spawns
+# one lto1 per core, and on the 32 GB c6a.4xlarge runner 16 of them exhaust
+# RAM+swap and get killed (earlyoom SIGTERM → "Terminated signal terminated
+# program lto1"). Set NO_LTO=FALSE on machines with ≥4 GB/core to re-enable.
+ARG NO_LTO=TRUE
 
 WORKDIR /opt
 RUN git clone https://github.com/hyrise/hyrise.git \
