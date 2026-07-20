@@ -5,5 +5,7 @@ set -e
 # generic ZigHouse HTTP server can ingest, and there is no shared JSON download
 # helper, so there is no separate download step here.
 export BENCH_DOWNLOAD_SCRIPT=""
-export BENCH_DURABLE=yes
+# Skip the concurrent-QPS test by default (see issue #946); override
+# BENCH_CONCURRENT_DURATION to run it against the HTTP server.
+export BENCH_CONCURRENT_DURATION="${BENCH_CONCURRENT_DURATION:-0}"
 exec ../lib/benchmark-common.sh

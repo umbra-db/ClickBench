@@ -1,10 +1,9 @@
 #!/bin/bash
 set -eu
 
-wget --continue --progress=dot:giga \
-    'https://datasets.clickhouse.com/hits_compatible/hits.json.gz'
-pigz -d -f hits.json.gz
-
+# hits.json is delivered by the shared lib/download-hits-json helper
+# (symlink to the RO dataset on the playground, wget + pigz
+# elsewhere).
 python3 send_datawithactionline.py
 
 rm -f hits.json

@@ -11,12 +11,10 @@ for _ in {1..300}; do
     sleep 1
 done
 
-wget --continue --progress=dot:giga \
-    'https://datasets.clickhouse.com/hits_compatible/hits.json.gz'
-gunzip -f hits.json.gz
-
-# Bulk insert via 8 parallel jsonline streams.
-cat hits.json | split -n r/8 -d --filter="curl -sS -T - -X POST 'http://localhost:9428/insert/jsonline?_time_field=EventTime&_stream_fields=AdvEngineID,CounterID'"
+# Bulk insert via 8 parallel jsonline streams. hits.json is delivered
+# by the shared lib/download-hits-json helper (symlink to the RO
+# dataset on the playground, wget + pigz elsewhere).
+split -n r/8 -d --filter="curl -sS -T - -X POST 'http://localhost:9428/insert/jsonline?_time_field=EventTime&_stream_fields=AdvEngineID,CounterID'" hits.json
 
 rm -f hits.json
 sync
