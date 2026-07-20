@@ -63,8 +63,12 @@ RUN cmake -GNinja -DCMAKE_BUILD_TYPE=Release -DNO_LTO=${NO_LTO} .. \
 
 FROM ubuntu:25.04
 ENV DEBIAN_FRONTEND=noninteractive
+# libboost-container/date-time: libhyrise_impl.so links them dynamically
+# (they are not dependencies of boost-system/thread, so they must be listed).
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
+        libboost-container1.83.0 \
+        libboost-date-time1.83.0 \
         libboost-system1.83.0 \
         libboost-thread1.83.0 \
         libhwloc15 \
