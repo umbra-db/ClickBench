@@ -5,13 +5,8 @@ if [ ! -x ./clickhouse ]; then
     curl https://clickhouse.com/ | sh
 fi
 
-# Configure a filesystem cache in tmpfs for S3 object reads, as the entry
-# used before the install/load/query refactor. Unlike the userspace page
-# cache (in-process RAM, lost when the per-query clickhouse-local process
-# exits), the filesystem cache persists across ./query invocations, so the
-# second and third tries of each query are served from local memory instead
-# of re-fetching from S3. ./flush-caches removes it before each query's
-# cold try.
+# Filesystem cache for S3 reads: unlike the in-process page cache, it
+# persists across the per-try clickhouse-local processes.
 cat > clickhouse-local.yaml <<YAML
 filesystem_caches:
     cache:

@@ -132,10 +132,7 @@ bench_wait_stopped() {
 bench_flush_caches() {
     sync
     echo 3 | sudo tee /proc/sys/vm/drop_caches >/dev/null
-    # Optional per-system hook for caches the kernel can't drop: e.g. a
-    # database-managed filesystem cache for object storage (datalake
-    # entries). Runs after the OS page cache flush so the cold try is
-    # cold for both layers.
+    # Per-system hook for caches the kernel can't drop.
     if [ -x ./flush-caches ]; then
         ./flush-caches >/dev/null 2>&1 || true
     fi
