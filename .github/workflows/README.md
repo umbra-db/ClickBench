@@ -36,15 +36,14 @@ separate process, implemented separately.
    The permissions policy needs `ec2:RunInstances`, `ec2:CreateTags`,
    `ec2:DescribeImages`, and `ec2:DescribeInstanceTypes`.
 
-2. Repository variables `BENCHMARK_AWS_ROLE_ARN` (the ARN of that role) and
-   `BENCHMARK_AWS_REGION`. While the variables are not set, the workflows
-   skip the launch instead of failing.
+   The role's ARN and the region (us-east-1) are set in
+   `.github/actions/launch-benchmark/action.yml`.
 
-3. An environment named `benchmark-approval` with required reviewers. It
+2. An environment named `benchmark-approval` with required reviewers. It
    gates the PR workflow: nothing is launched for a pull request until a
    reviewer approves the pending deployment.
 
-4. Enough on-demand vCPU quota in the region: the daily run launches six
+3. Enough on-demand vCPU quota in the region: the daily run launches six
    c6a.4xlarge machines at once, 96 vCPUs, on top of whatever is still
    running. `run-benchmark.sh` waits and retries while the quota is
    exhausted, but only within the job's 55-minute limit.

@@ -73,5 +73,3 @@ jobs:
           system: ${{ matrix.system }}
           repo: ${{ github.event.pull_request.head.repo.full_name }}
           branch: ${{ github.event.pull_request.head.ref }}
-          role-to-assume: ${{ vars.BENCHMARK_AWS_ROLE_ARN }}
-          aws-region: ${{ vars.BENCHMARK_AWS_REGION }}

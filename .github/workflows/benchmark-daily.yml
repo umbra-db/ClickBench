@@ -31,5 +31,3 @@ jobs:
       - uses: ./.github/actions/launch-benchmark
         with:
           system: ${{ matrix.system }}
-          role-to-assume: ${{ vars.BENCHMARK_AWS_ROLE_ARN }}
-          aws-region: ${{ vars.BENCHMARK_AWS_REGION }}

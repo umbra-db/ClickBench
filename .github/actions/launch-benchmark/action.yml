@@ -22,37 +22,22 @@ inputs:
   timeout:
     description: "Time limit for benchmark.sh on the machine, seconds"
     default: "36000"
-  role-to-assume:
-    description: "ARN of the federated IAM role that can launch EC2 machines"
-    required: true
   aws-region:
     description: "AWS region to launch the machine in"
-    required: true
+    default: "us-east-1"
 
 runs:
   using: "composite"
   steps:
-    - id: check
-      shell: bash
-      env:
-        role: ${{ inputs.role-to-assume }}
-      run: |
-        if [ -z "$role" ]; then
-          echo "The BENCHMARK_AWS_ROLE_ARN repository variable is not set. Skipping."
-          echo "configured=false" >> "$GITHUB_OUTPUT"
-        else
-          echo "configured=true" >> "$GITHUB_OUTPUT"
-        fi
-
-    - if: steps.check.outputs.configured == 'true'
-      uses: aws-actions/configure-aws-credentials@v4
+    # The role's trust policy only admits workflow runs of this repository,
+    # so assuming it fails everywhere else, including forks.
+    - uses: aws-actions/configure-aws-credentials@v4
       with:
-        role-to-assume: ${{ inputs.role-to-assume }}
+        role-to-assume: arn:aws:iam::264113785604:role/ClickBenchLauncher
         aws-region: ${{ inputs.aws-region }}
         role-session-name: clickbench-${{ github.run_id }}
 
-    - if: steps.check.outputs.configured == 'true'
-      shell: bash
+    - shell: bash
       env:
         system: ${{ inputs.system }}
         machine: ${{ inputs.machine }}
