@@ -10,8 +10,8 @@ separate process, implemented separately.
 
 | Workflow | Trigger | What it launches |
 |----------|---------|------------------|
-| `benchmark-daily.yml` | daily, 02:00 UTC | the ClickHouse variants on c6a.4xlarge from main |
-| `benchmark-manual.yml` | manual | any system, machine, repository and branch |
+| `benchmark-daily.yml` | daily, 02:00 UTC | the ClickHouse variants, each on the whole set of machine types, from main |
+| `benchmark-manual.yml` | manual | any systems, machines, repository and branch |
 | `benchmark-pr.yml` | pull requests | the systems whose directories the PR changes (results and *.md files don't count), from the PR's repository and branch, after manual approval |
 
 ## Setup
@@ -44,6 +44,8 @@ separate process, implemented separately.
    reviewer approves the pending deployment.
 
 3. Enough on-demand vCPU quota in the region: the daily run launches six
-   c6a.4xlarge machines at once, 96 vCPUs, on top of whatever is still
-   running. `run-benchmark.sh` waits and retries while the quota is
-   exhausted, but only within the job's 55-minute limit.
+   systems on nine machine types - 3744 vCPUs if everything runs at once,
+   most of it in the three metal instances (192 vCPUs each) of the six
+   systems. `run-benchmark.sh` waits and retries while the quota or the
+   capacity is exhausted, but only within the job's 55-minute limit; what
+   could not be launched by then is reported as failed.

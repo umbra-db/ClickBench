@@ -1,17 +1,18 @@
 name: "Launch benchmark"
 description: >
-  Assume the federated AWS IAM role and launch an EC2 machine that runs one
-  benchmark unattended. The runner only launches: run-benchmark.sh renders
-  cloud-init.sh.in and calls ec2 run-instances; the machine clones the
-  repository, runs <system>/benchmark.sh, sends its log to the results sink
-  and terminates itself.
+  Assume the federated AWS IAM role and launch EC2 machines that run
+  benchmarks unattended: one machine for every (machine type, system) pair.
+  The runner only launches: run-benchmark.sh renders cloud-init.sh.in and
+  calls ec2 run-instances; each machine clones the repository, runs
+  <system>/benchmark.sh, sends its log to the results sink and terminates
+  itself.
 
 inputs:
-  system:
-    description: "System to benchmark: a directory name, e.g. clickhouse-parquet"
+  systems:
+    description: "Systems to benchmark: directory names, space-separated"
     required: true
-  machine:
-    description: "EC2 instance type"
+  machines:
+    description: "EC2 instance types, space-separated"
     default: "c6a.4xlarge"
   repo:
     description: "GitHub repository (owner/name) the machine will clone"
@@ -39,9 +40,19 @@ runs:
 
     - shell: bash
       env:
-        system: ${{ inputs.system }}
-        machine: ${{ inputs.machine }}
+        systems: ${{ inputs.systems }}
+        machines: ${{ inputs.machines }}
         repo: ${{ inputs.repo }}
         branch: ${{ inputs.branch }}
         timeout: ${{ inputs.timeout }}
-      run: ./run-benchmark.sh
+      run: |
+        failed=""
+        for m in $machines; do
+            for s in $systems; do
+                machine="$m" system="$s" ./run-benchmark.sh || failed="$failed $s/$m"
+            done
+        done
+        if [ -n "$failed" ]; then
+            echo "Failed to launch:$failed"
+            exit 1
+        fi
