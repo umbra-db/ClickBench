@@ -8,9 +8,6 @@ export DEBIAN_FRONTEND=noninteractive
 # --- ClickHouse ---
 if [ ! -x /usr/bin/clickhouse ]; then
     cd /tmp
-    # -f and retries: when the whole daily fleet downloads at once,
-    # clickhouse.com occasionally answers 429, and without -f the error page
-    # would be piped into sh.
     curl -fsSL --retry 10 --retry-delay 60 --retry-all-errors https://clickhouse.com/ | sh
     sudo ./clickhouse install --noninteractive
     rm -f clickhouse
