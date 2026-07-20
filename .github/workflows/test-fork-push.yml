@@ -1,0 +1,29 @@
+name: "Test fork push"
+
+# Temporary workflow to test committing results to a fork PR with the
+# robot-clickhouse token. To be removed once the test passes.
+on:
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: "Fork PR number"
+        required: true
+      comment:
+        description: "ID of the collect-results comment with the paste links"
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          CLICKBENCH_FORK_PUSH_TOKEN: ${{ secrets.ROBOT_CLICKHOUSE_COMMIT_TOKEN }}
+          PR_NUMBER: ${{ inputs.pr }}
+          COMMENT_ID: ${{ inputs.comment }}
+        run: python3 test-fork-push.py "$PR_NUMBER" "$COMMENT_ID"
