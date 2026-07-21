@@ -38,6 +38,14 @@ PHASE="${3:-all}"
 [ -z "${IMAGE}" ] && IMAGE="$(./list-versions.sh | awk -v v="${VERSION}" '$1==v{print $2}')"
 [ -z "${IMAGE}" ] && { echo "no image for ${VERSION}" >&2; exit 1; }
 
+# "local" provider (used for the master/dev build): no Docker -- install ClickHouse on the
+# host with the official one-line installer (curl https://clickhouse.com/ | sh) and run the
+# server as a background process out of LOCAL_DIR (which then holds its data). Loading,
+# queries and sizing are otherwise identical to the Docker path.
+LOCAL=""; [ "${IMAGE}" = "local" ] && LOCAL=1
+LOCAL_DIR="${HERE}/.local-server"   # where curl|sh drops the binary before `clickhouse install`
+SUDO=""; [ "$(id -u)" -ne 0 ] && SUDO=sudo   # `clickhouse install/start/stop` need root; cloud-init already is
+
 CONTAINER="chver_${VERSION//[^0-9A-Za-z]/_}"
 OUT="${HERE}/results/${VERSION}.json"
 # Per-table load timings, written during the load phase and read by the bench
@@ -69,7 +77,12 @@ declare -A TABLES=(
 # late crash can't take down the earlier datasets' results as collateral.
 QUERY_ORDER="mgbench ssb hits uk ontime taxi coffeeshop tpch tpcds job"
 
-cleanup() { sudo docker rm -f "${CONTAINER}" >/dev/null 2>&1; }
+cleanup() {
+    # `clickhouse stop` manages the daemon via its own pidfile and returns once stopped, so
+    # there is nothing for this shell to wait on (the earlier nohup approach could hang here).
+    [ -n "${LOCAL}" ] && { ${SUDO} clickhouse stop >/dev/null 2>&1 || true; return 0; }
+    sudo docker rm -f "${CONTAINER}" >/dev/null 2>&1
+}
 # The load phase must leave the container running for the later bench phase;
 # all/bench tear it down on exit.
 [ "${PHASE}" != "load" ] && trap cleanup EXIT
@@ -100,8 +113,12 @@ exec_client()    { sudo ${CH_TIMEOUT:+timeout ${CH_TIMEOUT}} docker exec -i -e H
 sidecar_client() { sudo ${CH_TIMEOUT:+timeout ${CH_TIMEOUT}} docker run --rm -i -e HOME=/tmp -e TZ=UTC \
                        -v /usr/share/zoneinfo:/usr/share/zoneinfo:ro \
                        --network "container:${CONTAINER}" "${CLIENT_IMAGE}" "$@"; }
+# local provider: the installed clickhouse client (on PATH after `clickhouse install`),
+# connecting to the host server over TCP.
+local_client()   { ${CH_TIMEOUT:+timeout ${CH_TIMEOUT}} env HOME=/tmp TZ=UTC clickhouse client "$@"; }
 client() {
     case "${CLIENT_MODE}" in
+        local)   local_client "$@" ;;
         sidecar) sidecar_client "$@" ;;
         *)       exec_client "$@" ;;
     esac
@@ -161,6 +178,29 @@ ensure_built_image() {
 
 start_server() {
     cleanup
+    if [ -n "${LOCAL}" ]; then
+        # No Docker: fetch the master build with the official one-liner, then install and
+        # start it as a normal system service (curl|sh -> ./clickhouse install -> clickhouse
+        # start). The service daemonises itself and `clickhouse stop` stops it cleanly, so no
+        # backgrounding/pidfile juggling here.
+        echo "starting ${VERSION}: curl https://clickhouse.com/ | sh  ->  clickhouse install  ->  clickhouse start" >&2
+        mkdir -p "${LOCAL_DIR}"
+        ( cd "${LOCAL_DIR}" && curl -fsSL https://clickhouse.com/ | sh ) >&2
+        [ -x "${LOCAL_DIR}/clickhouse" ] || { echo "local install failed: ${LOCAL_DIR}/clickhouse missing" >&2; return 1; }
+        ${SUDO} "${LOCAL_DIR}/clickhouse" install --noninteractive >&2 2>&1 </dev/null \
+            || ${SUDO} "${LOCAL_DIR}/clickhouse" install >&2 2>&1 </dev/null \
+            || { echo "clickhouse install failed" >&2; return 1; }
+        ${SUDO} clickhouse start >&2 2>&1
+        CLIENT_MODE=local
+        local i
+        for i in $(seq 1 "${READY_TIMEOUT:-90}"); do
+            local_client --query "SELECT 1" >/dev/null 2>&1 && return 0
+            sleep 1
+        done
+        echo "local server ${VERSION} did not become ready; last log lines:" >&2
+        ${SUDO} tail -20 /var/log/clickhouse-server/clickhouse-server.err.log >&2 2>&1 || true
+        return 1
+    fi
     if [ "${IMAGE}" = "package" ]; then
         # Fallback provider: install the .deb release into a stock Ubuntu image.
         echo "starting ${VERSION} via package-in-ubuntu fallback" >&2
@@ -290,8 +330,21 @@ dataset_fully_loaded() {
 # memory in check; a revive-and-retry pass then reloads anything that still failed,
 # sequentially, so a transient death doesn't leave the dataset permanently missing.
 load_data() {
-    local ds pids=() active=0 to_load=() attempt missing
+    local ds pids=() active=0 to_load=() attempt missing keep=""
     : > "${LOAD_STATS}"   # fresh per run; per-table load times accumulate here
+    # Prehistoric (date-labeled) and pre-Docker (revision < 53991) versions can't run the
+    # big/complex datasets (large joins job/tpcds/tpch, the 600M-row SSB lineorder_flat, the
+    # 500M-row coffeeshop fact), so never load them -- their queries record null as usual. On
+    # the VM run-benchmark.sh already drops these from the download + LOAD_DATASETS; this is
+    # the local (run-all.sh / direct) path's equivalent, and a safety net for the VM path.
+    if [[ "${VERSION}" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] || ! version_ge "${VERSION}" "53991"; then
+        for ds in ${LOAD_DATASETS}; do
+            case "${ds}" in ssb|tpch|tpcds|coffeeshop|job) continue ;; esac
+            keep+="${ds} "
+        done
+        LOAD_DATASETS="${keep% }"
+        echo "pre-Docker/prehistoric ${VERSION}: loading only [${LOAD_DATASETS}]" >&2
+    fi
     for ds in ${LOAD_DATASETS}; do
         if ! dataset_supported "${ds}"; then
             echo "=== skipping load of ${ds}: no query supported on ${VERSION} (all below min version) ===" >&2
@@ -355,6 +408,13 @@ launch_daemon_in_container() {
 }
 wait_alive() { local i; for i in $(seq 1 "${1:-180}"); do server_alive && return 0; sleep 1; done; return 1; }
 revive_server() {
+    if [ -n "${LOCAL}" ]; then
+        echo "${VERSION}: relaunching local server (clickhouse start); recent log:" >&2
+        ${SUDO} tail -8 /var/log/clickhouse-server/clickhouse-server.err.log 2>&1 | sed 's/^/      | /' >&2 || true
+        ${SUDO} clickhouse start >&2 2>&1
+        wait_alive "${REVIVE_TIMEOUT:-180}" && { echo "${VERSION}: local server back up" >&2; return 0; }
+        echo "${VERSION}: local server did not come back" >&2; return 1
+    fi
     local running
     running="$(sudo docker inspect -f '{{.State.Running}}' "${CONTAINER}" 2>/dev/null)"
     echo "${VERSION}: reviving server (container running=${running:-unknown}); recent container logs:" >&2
@@ -390,7 +450,7 @@ report_sizes() {
     # The benchmark tables live in per-dataset databases; exclude the server's
     # own system databases.
     out=$(client --query "SELECT database, table, sum(bytes_on_disk) AS size FROM system.parts WHERE database NOT IN ('system', 'information_schema', 'INFORMATION_SCHEMA') GROUP BY database, table ORDER BY database, table FORMAT TabSeparated" </dev/null 2>/dev/null)
-    if [ -n "${out}" ]; then
+    if [ -n "${out}" ] || [ -n "${LOCAL}" ]; then
         printf '%s\n' "${out}"
     else
         echo "(system.parts unavailable — measuring the data directory)"
@@ -411,6 +471,7 @@ fmt_err() { printf '%s' "$1" | tr '\n\t' '  ' | sed 's/  */ /g; s/^ //' | cut -c
 # so 1.1.54378 and the bare 53982 both sort *below* any calendar release.
 version_key() {
     local v="$1" a b c d
+    [ "$v" = "master" ] && { echo "999999 0 0 0"; return; }   # the dev build is the newest
     if [[ "$v" =~ ^[0-9]+$ ]]; then echo "1 1 $v 0"; return; fi
     IFS='.' read -r a b c d _ <<<"$v"
     echo "${a:-0} ${b:-0} ${c:-0} ${d:-0}"
@@ -503,6 +564,12 @@ run_query() {
 # Attach to an already-running, already-loaded container (bench phase): detect
 # the client mode without (re)starting or wiping the container.
 detect_client() {
+    if [ -n "${LOCAL}" ]; then
+        CLIENT_MODE=local
+        local i
+        for i in $(seq 1 30); do local_client --query "SELECT 1" >/dev/null 2>&1 && return 0; sleep 1; done
+        echo "local server for ${VERSION} not answering" >&2; return 1
+    fi
     sudo docker ps -q -f "name=^${CONTAINER}$" | grep -q . || { echo "container ${CONTAINER} not running" >&2; return 1; }
     [ "${IMAGE}" != "package" ] && [ -n "${CLIENT_IMAGE}" ] && sudo docker pull "${CLIENT_IMAGE}" >/dev/null 2>&1
     local i
@@ -534,7 +601,7 @@ emit_load_time_json() {
 emit_data_size_json() {
     local out loaded=" ${1:-} "
     out=$(client --query "SELECT database, sum(bytes_on_disk) FROM system.parts WHERE active AND database NOT IN ('system', 'information_schema', 'INFORMATION_SCHEMA') GROUP BY database FORMAT TabSeparated" </dev/null 2>/dev/null)
-    if [ -z "${out}" ]; then
+    if [ -z "${out}" ] && [ -z "${LOCAL}" ]; then
         # No system.parts: sum the byte size of each dataset's data directory in the
         # container (works for both Log and MergeTree; -L follows the store/ symlinks).
         out=$(sudo docker exec "${CONTAINER}" sh -c '
@@ -552,6 +619,7 @@ emit_data_size_json() {
 # fall back to their commit date in monthly.tsv (column 3).
 release_date() {
     local d
+    [ "${VERSION}" = "master" ] && { date -u +%F; return; }   # the dev tip: date it by the run day
     d=$(./list-versions.sh 2>/dev/null | awk -F'\t' -v v="${VERSION}" '$1==v{print $3; exit}')
     [ -z "${d}" ] && d=$(awk -F'\t' -v v="${VERSION}" '$1==v{print $3; exit}' "${HERE}/build-from-source/monthly.tsv" 2>/dev/null)
     printf '%s' "${d}"
@@ -566,7 +634,7 @@ release_date() {
 server_version() {
     local v rev
     v=$(client --query "SELECT version()" 2>/dev/null | tr -d '\r')
-    if [ -z "${v}" ]; then
+    if [ -z "${v}" ] && [ -z "${LOCAL}" ]; then
         rev=$(sudo docker exec "${CONTAINER}" cat /clickhouse-revision 2>/dev/null | tr -d '\r\n ')
         [ -n "${rev}" ] && v="0.0.${rev}"
     fi

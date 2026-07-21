@@ -704,19 +704,42 @@ function renderSummary(filtered_data, baseline_data) {
         /// and cannot flip the order of two other versions. Geometric mean across enabled
         /// queries (dataset on + query checkbox on).
         metric_noun = 'query time';
-        /// Per-query worst (slowest) selected-run time across the shown versions.
+        /// An absent result is penalized by the MAXIMUM of two estimates of how slow it
+        /// would have been:
+        ///   (A) 2× the worst time for that query across the shown versions (the original
+        ///       rule), and
+        ///   (B) 2× this version's own geometric-mean slowdown (over the queries it DID run,
+        ///       relative to the per-query baseline) applied to this query's baseline.
+        /// (A) alone flattens a very slow version's many absent queries to ~2× the (fast)
+        /// baseline, hiding its true slowness; (B) lifts each absent query to this version's
+        /// typical slowdown, so e.g. a version running 50-200× slower on the queries it ran
+        /// is penalized in that range for the ones it did not.
         const worst_per_query = [...Array(num_queries).keys()].map(i => {
             const vals = filtered_data.map(elem => selectRun(elem.result[i])).filter(x => x !== null);
             return vals.length ? Math.max(...vals) : null;
         });
         summaries = filtered_data.map(elem => {
+            /// This version's geometric-mean slowdown to the per-query baseline, over the
+            /// queries it actually ran (used for estimate B); 1 if it ran nothing.
+            let sacc = 0, sn = 0;
+            for (let i = 0; i < num_queries; ++i) {
+                if (!any_enabled || queryEnabled(i)) {
+                    const base = selectRun(baseline_data[i]), cur = selectRun(elem.result[i]);
+                    if (base !== null && cur !== null) { sacc += Math.log(cur / base); ++sn; }
+                }
+            }
+            const slowdown = sn ? Math.exp(sacc / sn) : 1;
             let accumulator = 0, used = 0;
             for (let i = 0; i < num_queries; ++i) {
                 if (!any_enabled || queryEnabled(i)) {
                     const base = selectRun(baseline_data[i]);
                     if (base === null) { continue; }
-                    const penalty = worst_per_query[i] != null ? missing_result_penalty * worst_per_query[i] : missing_result_time;
-                    const curr = selectRun(elem.result[i]) ?? penalty;
+                    let curr = selectRun(elem.result[i]);
+                    if (curr === null) {
+                        const byWorst = worst_per_query[i] != null ? missing_result_penalty * worst_per_query[i] : missing_result_time;
+                        const bySlowdown = missing_result_penalty * slowdown * base;
+                        curr = Math.max(byWorst, bySlowdown);
+                    }
                     accumulator += Math.log((constant_time_add + curr) / (constant_time_add + base));
                     ++used;
                 }
@@ -782,7 +805,7 @@ function renderSummary(filtered_data, baseline_data) {
         td_number.appendChild(document.createTextNode(value_text(idx)));
 
         /// Horizon (multi-scale) bar, ported from the main ClickBench page: the same
-        /// value is drawn at 1×, 2×, 4×, 8× zoom in four colour bands, so small
+        /// value is drawn at 1×, 4×, 16×, 64× zoom in four colour bands, so small
         /// differences near the fast end stay visible across a wide dynamic range.
         const percentage = (ratio != null && isFinite(max_ratio) && max_ratio > 0) ? ratio / max_ratio * 100 : 0;
         let td_bar = document.createElement('td');
@@ -797,12 +820,12 @@ function renderSummary(filtered_data, baseline_data) {
                 var(--bar-color1) 0%,
                 var(--bar-color1) ${Math.min(100, percentage)}%,
                 var(--bar-color2) ${Math.min(100, percentage)}%,
-                var(--bar-color2) ${Math.min(100, percentage * 2)}%,
-                var(--bar-color3) ${Math.min(100, percentage * 2)}%,
+                var(--bar-color2) ${Math.min(100, percentage * 4)}%,
                 var(--bar-color3) ${Math.min(100, percentage * 4)}%,
-                var(--bar-color4) ${Math.min(100, percentage * 4)}%,
-                var(--bar-color4) ${Math.min(100, percentage * 8)}%,
-                transparent ${Math.min(100, percentage * 8)}%,
+                var(--bar-color3) ${Math.min(100, percentage * 16)}%,
+                var(--bar-color4) ${Math.min(100, percentage * 16)}%,
+                var(--bar-color4) ${Math.min(100, percentage * 64)}%,
+                transparent ${Math.min(100, percentage * 64)}%,
                 transparent 100%)`;
         }
         td_bar.appendChild(bar);
@@ -1121,7 +1144,7 @@ if (window.location.hash) {
 }
 
 document.getElementById('scale_hint').textContent =
-    'Different colors on the bar chart represent the same values shown at different scales (1x, 2x, 4x, 8x zoom).';
+    'Different colors on the bar chart represent the same values shown at different scales (1x, 4x, 16x, 64x zoom).';
 
 render();
 updateSelectors();

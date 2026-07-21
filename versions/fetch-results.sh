@@ -37,6 +37,7 @@ fi
 
 reldate() {
     local v="$1" d mm
+    [ "${v}" = "master" ] && { date -u +%F; return; }   # the dev tip: use the current date
     if [[ "${v}" =~ ^([0-9]+)\.([0-9]+)\. ]] && [ "${BASH_REMATCH[1]}" -ge 18 ]; then
         mm="${BASH_REMATCH[1]}.${BASH_REMATCH[2]}"
         [ -n "${GROUP_FIRST[$mm]:-}" ] && { printf '%s' "${GROUP_FIRST[$mm]}"; return; }
@@ -98,13 +99,13 @@ echo "wrote $(ls results/*.json 2>/dev/null | wc -l) result files" >&2
 declare -A best
 for f in results/*.json; do
     v="$(basename "${f}" .json)"
-    case "${v}" in [0-9]*.[0-9]*) continue ;; esac   # already has a dotted prefix
+    case "${v}" in [0-9]*.[0-9]*|master) continue ;; esac   # dotted prefix, or the master tip: keep as-is
     av="$(jq -r '.actual_version // empty' "${f}")"; [ -z "${av}" ] && continue
     if [ -z "${best[${av}]:-}" ] || [ "${v}" -gt "${best[${av}]}" ]; then best[${av}]="${v}"; fi
 done
 for f in results/*.json; do
     v="$(basename "${f}" .json)"
-    case "${v}" in [0-9]*.[0-9]*) continue ;; esac
+    case "${v}" in [0-9]*.[0-9]*|master) continue ;; esac
     av="$(jq -r '.actual_version // empty' "${f}")"; [ -z "${av}" ] && continue
     if [ "${v}" = "${best[${av}]}" ]; then
         jq -cS --arg av "${av}" '.version = $av' "${f}" > results/.rename.tmp
@@ -114,3 +115,8 @@ for f in results/*.json; do
         rm -f "${f}"; echo "  dropped ${v}.json (duplicate of ${av})" >&2
     fi
 done
+
+# Normalise every result to the current per-query minimum versions (queries/*.minver):
+# the sink stores what each version produced under the minvers in effect WHEN it ran, which
+# may predate the current ones, so re-apply them here for consistency (idempotent).
+python3 "${HERE}/apply-minvers.py"
