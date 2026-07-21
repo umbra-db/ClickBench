@@ -1,23 +1,8 @@
 #!/bin/bash
-# Reads a SQL query from stdin and runs it against the ZigHouse HTTP server.
-# Stdout: query result (TabSeparated).
-# Stderr: query runtime in fractional seconds on the last line.
-# Exit non-zero on error.
-set -euo pipefail
-
-: "${ZIGHOUSE_PORT:=28123}"
-http_port=$((ZIGHOUSE_PORT + 1))
+set -e
 
 query=$(cat)
-
-# -G moves the url-encoded params into the ?query= URL parameter; the server
-# returns the result body, and curl's %{time_total} (whole-request wall time
-# in seconds) is appended on its own trailing line.
-out=$(curl -sS --fail-with-body -G "http://127.0.0.1:${http_port}/" \
-    --data-urlencode "query=${query}" \
-    --data-urlencode "default_format=TabSeparated" \
-    -w $'\n%{time_total}')
-
-# Everything but the last line is the result; the last line is the timing.
-printf '%s' "$out" | sed '$d'
-printf '%s\n' "$out" | tail -n1 >&2
+start=$(date +%s.%N)
+ZIGHOUSE_CLICKBENCH_SUBMIT=1 ./zighouse query zighouse-store hits "$query" >/dev/null
+end=$(date +%s.%N)
+awk -v s="$start" -v e="$end" 'BEGIN { printf "%.3f\n", e - s }' >&2

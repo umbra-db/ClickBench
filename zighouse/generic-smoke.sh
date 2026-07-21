@@ -1,29 +1,22 @@
 #!/bin/bash
-# Smoke-test ZigHouse's SQL engine on a handful of non-ClickBench statements
-# through the ClickHouse-compatible HTTP interface. This runs automatically at
-# the end of ./load (so the capability frontier is exercised on every run) and
-# can also be invoked standalone from this directory once the server is up and
-# the dataset has been loaded.
+# Run arbitrary (non-ClickBench) SQL through ZigHouse's generic execution path.
 set -u
 
-: "${ZIGHOUSE_PORT:=28123}"
-http_port=$((ZIGHOUSE_PORT + 1))
-base="http://127.0.0.1:${http_port}"
+SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+STORE=${ZIGHOUSE_STORE:-"${SCRIPT_DIR}/zighouse-store"}
+ZH=${ZIGHOUSE:-./zighouse}
 
 run() {
-    echo "== $1 =="
-    echo "SQL: $2"
-    curl -sS -G "${base}/" \
-        --data-urlencode "query=$2" \
-        --data-urlencode "default_format=TabSeparated" \
-        || echo "  -> error"
-    echo
+	echo "== $1 [$2] =="
+	echo "SQL: $3"
+	ZIGHOUSE_CLICKBENCH_SUBMIT=1 "$ZH" query "$STORE" hits "$3" || echo " -> error"
+	echo
 }
 
-run "count_all"       "SELECT COUNT(*) FROM hits"
-run "sum_with_filter" "SELECT SUM(AdvEngineID) FROM hits WHERE EventDate >= '2013-07-15'"
-run "min_max_date"    "SELECT MIN(EventDate), MAX(EventDate) FROM hits"
-run "count_distinct"  "SELECT COUNT(DISTINCT SearchEngineID) FROM hits"
-run "groupby_topk"    "SELECT RegionID, COUNT(*) AS c FROM hits GROUP BY RegionID ORDER BY c DESC LIMIT 5"
-
-exit 0
+run "count_all"            supported  "SELECT COUNT(*) FROM hits"
+run "sum_with_filter"      supported  "SELECT SUM(Age) FROM hits WHERE EventDate >= '2013-07-15'"
+run "min_max_date"        supported  "SELECT MIN(EventDate), MAX(EventDate) FROM hits"
+run "count_distinct"      supported  "SELECT COUNT(DISTINCT CounterID) FROM hits"
+run "groupby_counter"     supported  "SELECT CounterID, COUNT(*) FROM hits GROUP BY CounterID"
+run "where_and"           supported  "SELECT COUNT(*) FROM hits WHERE Age > 25 AND EventDate >= '2013-07-10'"
+run "groupby_topk"        supported  "SELECT CounterID, COUNT(*) AS c FROM hits GROUP BY CounterID ORDER BY c DESC LIMIT 10"
