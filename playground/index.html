@@ -8,7 +8,14 @@
 </head>
 <body>
 <header>
-    <h1>ClickBench Playground <span class="muted">&mdash; run SQL against 90+ databases</span></h1>
+    <div class="title-row">
+        <h1>ClickBench Playground <span class="muted">&mdash; run SQL against 90+ databases</span></h1>
+        <a class="github-stars" href="https://github.com/ClickHouse/ClickBench/" target="_blank" rel="noopener noreferrer" aria-label="Star ClickBench on GitHub" title="Star ClickBench on GitHub">
+            <svg class="github-stars-icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 .25a.75.75 0 0 1 .673.418l1.882 3.815 4.21.612a.75.75 0 0 1 .416 1.279l-3.046 2.97.719 4.192a.751.751 0 0 1-1.088.791L8 12.347l-3.766 1.98a.75.75 0 0 1-1.088-.79l.72-4.194L.818 6.374a.75.75 0 0 1 .416-1.28l4.21-.611L7.327.668A.75.75 0 0 1 8 .25Z"/></svg>
+            <span>Star</span>
+            <span class="github-stars-count" id="github-stars-count"></span>
+        </a>
+    </div>
 </header>
 
 <main>
@@ -65,5 +72,33 @@
 </main>
 
 <script src="app.js?v=36"></script>
+<script>
+(function () {
+    var el = document.getElementById('github-stars-count');
+    if (!el) return;
+    var REPO = 'ClickHouse/ClickBench';
+    var CACHE_KEY = 'github-stars-' + REPO;
+    var TTL = 6 * 3600 * 1000;
+
+    function format(n) {
+        return '' + n;
+    }
+    function show(n) { el.textContent = format(n); }
+
+    try {
+        var cached = JSON.parse(localStorage.getItem(CACHE_KEY) || 'null');
+        if (cached && (Date.now() - cached.t) < TTL) { show(cached.n); return; }
+    } catch (e) {}
+
+    fetch('https://api.github.com/repos/' + REPO)
+        .then(function (r) { return r.ok ? r.json() : null; })
+        .then(function (d) {
+            if (!d || typeof d.stargazers_count !== 'number') return;
+            show(d.stargazers_count);
+            try { localStorage.setItem(CACHE_KEY, JSON.stringify({ n: d.stargazers_count, t: Date.now() })); } catch (e) {}
+        })
+        .catch(function () {});
+})();
+</script>
 </body>
 </html>

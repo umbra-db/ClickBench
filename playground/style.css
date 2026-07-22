@@ -24,6 +24,30 @@ header { padding: 1em 1em; }
 header h1 { margin: 0; font-size: 22px; font-weight: 600; }
 .muted { color: var(--muted); font-weight: normal; }
 
+.title-row {
+    display: flex;
+    align-items: center;
+    gap: 0.75em;
+    flex-wrap: wrap;
+}
+.github-stars {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4em;
+    font-size: 13px;
+    line-height: 1;
+    text-decoration: none;
+    color: var(--fg);
+    border: 1px solid var(--muted);
+    border-radius: 6px;
+    padding: 0.4em 0.7em;
+    background: var(--bg-alt);
+    white-space: nowrap;
+}
+.github-stars:hover { background: var(--accent); color: var(--accent-fg); }
+.github-stars-icon { width: 1.1em; height: 1.1em; fill: currentColor; }
+.github-stars-count { font-weight: 600; }
+
 section { margin: 12px 0; }
 
 label { display: block; font-weight: 600; font-size: 12px; text-transform: uppercase;
