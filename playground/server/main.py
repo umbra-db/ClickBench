@@ -3,7 +3,7 @@
 Endpoints:
 
     GET  /                     redirects to /ui/
-    GET  /ui/...               static-serves files from ../web/
+    GET  /ui/...               static-serves files from ../
     GET  /api/systems          JSON list of all playground-eligible systems
     GET  /api/state            JSON snapshot of every VM's state
     GET  /api/system/{name}    detail for a single system
@@ -491,14 +491,29 @@ def build_app() -> web.Application:
     app.router.add_post("/api/query", obj.handle_query)
     app.router.add_get("/api/saved/{b64}", obj.handle_saved)
 
-    # Static UI
-    web_dir = Path(__file__).resolve().parent.parent / "web"
+    # Static UI. Files live at playground/{index.html,app.js,style.css}
+    # (not playgrou../) so that GitHub Pages serves the same page
+    # verbatim at https://benchmark.clickhouse.com/playground/, without
+    # a duplicate copy. The server hides README.md / INSTALL.md / docs/
+    # by only routing /ui/{index.html,app.js,style.css} explicitly.
+    playground_dir = Path(__file__).resolve().parent.parent
 
     async def root_redirect(_r: web.Request) -> web.Response:
         raise web.HTTPFound("/ui/")
 
     async def ui_index(_r: web.Request) -> web.FileResponse:
-        resp = web.FileResponse(web_dir / "index.html")
+        resp = web.FileResponse(playground_dir / "index.html")
+        resp.headers["Cache-Control"] = "no-store"
+        return resp
+
+    async def ui_asset(req: web.Request) -> web.FileResponse:
+        # Whitelist the two static assets the app references. Serving
+        # the whole playground_dir would expose README.md / INSTALL.md
+        # / docs/ / server/ / agent/ at /ui/…, which we don't want.
+        name = req.match_info["name"]
+        if name not in ("app.js", "style.css"):
+            raise web.HTTPNotFound()
+        resp = web.FileResponse(playground_dir / name)
         resp.headers["Cache-Control"] = "no-store"
         return resp
 
@@ -539,10 +554,7 @@ def build_app() -> web.Application:
     app.router.add_get("/", root_redirect)
     app.router.add_get("/ui/", ui_index)
     app.router.add_get("/ui", ui_index)
-    # follow_symlinks=False — GHSA-5h86-8mv2-jq9f covers a path-traversal
-    # in aiohttp's static handler that's only reachable when symlinks are
-    # followed. The repo's web/ tree has no symlinks anyway.
-    app.router.add_static("/ui/", path=str(web_dir), show_index=False)
+    app.router.add_get("/ui/{name}", ui_asset)
 
     return app
 
